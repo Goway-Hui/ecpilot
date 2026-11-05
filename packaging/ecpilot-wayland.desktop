@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=ECPilot (Wayland)
+GenericName=MSI Laptop Control Center (Wayland)
+Comment=MSI laptop control center using the Wayland backend
+Exec=env MCC_ALLOW_WAYLAND=1 ecpilot
+Icon=utilities-system-monitor
+Terminal=false
+Categories=System;Settings;HardwareSettings;
+Keywords=MSI;fan;battery;RGB;MUX;control;Wayland;
+StartupNotify=true

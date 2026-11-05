@@ -1,0 +1,17 @@
+post_install() {
+    systemctl daemon-reload
+    systemctl enable --now ecpilot-helper || true
+}
+
+post_upgrade() {
+    systemctl daemon-reload
+    systemctl try-restart ecpilot-helper || true
+}
+
+pre_remove() {
+    systemctl disable --now ecpilot-helper || true
+}
+
+post_remove() {
+    systemctl daemon-reload
+}

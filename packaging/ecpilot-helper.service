@@ -1,0 +1,11 @@
+[Unit]
+Description=ECPilot EC helper
+After=dbus.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/libexec/ecpilot-helper
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
