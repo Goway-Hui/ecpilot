@@ -85,6 +85,7 @@ helper。这是独立项目，不修改也不依赖基于 Qt 的 `MControlCenter
 | `src/bin/helper.rs` | 独立的 `ecpilot-helper` 可执行文件 |
 | `src/tray.rs` | 极简 ksni StatusNotifierItem 托盘 |
 | `src/klc/` | KLC 协议、hidraw I/O、型号/布局表（移植自 `msi-klc`） |
+| `assets/icons/` | 应用/托盘图标源文件（SVG）与各尺寸 PNG |
 | `packaging/` | systemd unit、D-Bus 策略、desktop 文件、PKGBUILD、安装钩子 |
 | `scripts/install.sh` | 本地 `/usr/local` 安装脚本 |
 

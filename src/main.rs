@@ -17,6 +17,18 @@ use std::time::Duration;
 
 use gpui::{prelude::*, App, Bounds, QuitMode, WindowBounds, WindowOptions, px, size};
 
+/// X11 窗口图标：解码内置 PNG（Wayland 使用 app_id 匹配 desktop 文件）。
+fn window_icon() -> Option<std::sync::Arc<image::RgbaImage>> {
+    static ICON: std::sync::OnceLock<Option<std::sync::Arc<image::RgbaImage>>> =
+        std::sync::OnceLock::new();
+    ICON.get_or_init(|| {
+        image::load_from_memory(include_bytes!("../assets/icons/ecpilot-128.png"))
+            .ok()
+            .map(|image| std::sync::Arc::new(image.to_rgba8()))
+    })
+    .clone()
+}
+
 use crate::app::{AppState, Page};
 
 fn instance_lock_path() -> PathBuf {
@@ -187,6 +199,7 @@ fn main() {
                 }),
                 app_id: Some("ecpilot".into()),
                 window_min_size: Some(size(px(960.0), px(640.0))),
+                icon: window_icon(),
                 ..Default::default()
             },
             move |window, cx| {

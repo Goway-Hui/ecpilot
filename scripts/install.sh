@@ -22,6 +22,14 @@ install -Dm644 packaging/ecpilot-helper.service /etc/systemd/system/
 install -Dm644 packaging/ecpilot-helper.conf /etc/dbus-1/system.d/
 install -Dm644 packaging/ecpilot.desktop /usr/share/applications/
 install -Dm644 packaging/ecpilot-wayland.desktop /usr/share/applications/
+install -Dm644 assets/icons/ecpilot.svg \
+    "$PREFIX/share/icons/hicolor/scalable/apps/ecpilot.svg"
+for size in 16 24 32 48 64 128 256; do
+    install -Dm644 "assets/icons/ecpilot-$size.png" \
+        "$PREFIX/share/icons/hicolor/${size}x${size}/apps/ecpilot.png"
+done
+gtk-update-icon-cache -f -t "$PREFIX/share/icons/hicolor" 2>/dev/null || true
+xdg-icon-resource forceupdate --theme hicolor 2>/dev/null || true
 systemctl daemon-reload
 systemctl reload dbus.service 2>/dev/null || true
 systemctl enable --now ecpilot-helper

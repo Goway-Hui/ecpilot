@@ -1269,6 +1269,7 @@ dependencies = [
  "anyhow",
  "gpui-fast",
  "gpui-fast-platform",
+ "image",
  "ksni",
  "nix",
  "serde",

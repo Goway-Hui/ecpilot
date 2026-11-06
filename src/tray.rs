@@ -36,7 +36,18 @@ impl ksni::Tray for Tray {
     }
 
     fn icon_name(&self) -> String {
-        "applications-system".into()
+        // 安装后使用自有图标；直接从 target/ 运行时回退到主题图标，避免托盘空白。
+        let installed = [
+            "/usr/share/icons/hicolor/scalable/apps/ecpilot.svg",
+            "/usr/local/share/icons/hicolor/scalable/apps/ecpilot.svg",
+        ]
+        .iter()
+        .any(|path| std::path::Path::new(path).exists());
+        if installed {
+            "ecpilot".into()
+        } else {
+            "applications-system".into()
+        }
     }
 
     /// 左键点击托盘图标：显示主窗口。

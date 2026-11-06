@@ -92,6 +92,7 @@ Tctl/Tccd1/Tccd2, and writes cpufreq caps, EPP preference and boost directly.
 | `src/bin/helper.rs` | standalone `ecpilot-helper` binary |
 | `src/tray.rs` | minimal ksni StatusNotifierItem |
 | `src/klc/` | KLC protocol, hidraw I/O, model/layout tables (ported from `msi-klc`) |
+| `assets/icons/` | app/tray icon source (SVG) and rendered sizes |
 | `packaging/` | systemd unit, D-Bus policy, desktop entries, PKGBUILD, install hooks |
 | `scripts/install.sh` | local `/usr/local` installer |
 
