@@ -47,6 +47,8 @@ pub(crate) struct Config {
     pub(crate) lang: Option<String>,
     /// 关闭窗口时是否最小化到托盘；缺省开启。
     pub(crate) close_to_tray: Option<bool>,
+    /// 温控换档/高温桌面通知；缺省开启。
+    pub(crate) thermal_notify: Option<bool>,
     /// 上次使用的风扇模式（auto/silent/advanced）。
     pub(crate) fan_mode: Option<String>,
     /// 上次使用的曲线预设（default/quiet/gaming/max/custom）。
@@ -171,6 +173,18 @@ pub(crate) fn save_close_to_tray(enabled: bool) {
     write_config(&config);
 }
 
+/// 是否发送温控换档/高温桌面通知，缺省开启。
+pub(crate) fn load_thermal_notify() -> bool {
+    load_config().thermal_notify.unwrap_or(true)
+}
+
+/// 保存温控通知偏好。
+pub(crate) fn save_thermal_notify(enabled: bool) {
+    let mut config = load_config();
+    config.thermal_notify = Some(enabled);
+    write_config(&config);
+}
+
 fn custom_path() -> std::path::PathBuf {
     config_path().with_file_name("custom.json")
 }
@@ -227,3 +241,38 @@ pub(crate) fn save_custom(curve: &CustomCurve) {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn thermal_notify_round_trips() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XDG_CONFIG_HOME");
+        let dir = std::env::temp_dir().join(format!("ecpilot-config-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // SAFETY: this test serializes its own env mutation with ENV_LOCK and
+        // restores the previous value before finishing.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir); }
+
+        save_thermal_notify(false);
+        assert!(!load_thermal_notify());
+        save_thermal_notify(true);
+        assert!(load_thermal_notify());
+        let config: Config =
+            serde_json::from_str(&std::fs::read_to_string(config_path()).unwrap()).unwrap();
+        assert_eq!(config.thermal_notify, Some(true));
+
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

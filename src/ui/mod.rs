@@ -554,6 +554,45 @@ impl AppState {
             .child(label)
     }
 
+    /// 开关控件：42x24 轨道 + 18px 滑块。
+    pub(crate) fn switch(
+        &self,
+        id: &'static str,
+        on: bool,
+        cx: &mut Context<Self>,
+        handler: impl Fn(&mut Self, &mut Context<Self>) + 'static,
+    ) -> impl IntoElement {
+        let theme = self.theme();
+        let mut track = div()
+            .id(id)
+            .h(px(24.0))
+            .w(px(42.0))
+            .rounded_full()
+            .cursor_pointer()
+            .border_1()
+            .bg(rgb(if on { theme.accent } else { theme.card_hover }))
+            .border_color(rgb(if on { theme.accent } else { theme.border }))
+            .flex()
+            .items_center()
+            .px(px(3.0))
+            .hover(move |style| style.opacity(0.9))
+            .active(|style| style.opacity(0.8))
+            .on_click(cx.listener(move |this, _, _, cx| handler(this, cx)));
+        track = if on {
+            track.justify_end()
+        } else {
+            track.justify_start()
+        };
+        track.child(
+            div()
+                .size(px(18.0))
+                .rounded_full()
+                .bg(rgb(theme.card))
+                .border_1()
+                .border_color(rgb(theme.border)),
+        )
+    }
+
     /// 调整自定义曲线的单个点。
     pub(crate) fn adjust_custom(
         &mut self,

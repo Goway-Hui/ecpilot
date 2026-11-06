@@ -7,7 +7,7 @@ use gpui::{AnyElement, Context, Div, div, prelude::*, px, rgb};
 use crate::app::{AppState, Page};
 use crate::config::{
     CurveTarget, CustomCurve, Lang, save_close_to_tray, save_config, save_custom, save_fan_mode,
-    save_fan_preset, save_shift_mode,
+    save_fan_preset, save_shift_mode, save_thermal_notify,
 };
 use crate::ec;
 use crate::theme::{RADIUS_CONTROL, ThemeMode};

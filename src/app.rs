@@ -13,7 +13,7 @@ use gpui::{
     ScrollHandle, Window, WindowBounds, WindowOptions, size,
 };
 
-use crate::config::{load_close_to_tray, load_config, load_custom, load_fan_settings, CurveTarget, CustomCurve, Lang};
+use crate::config::{load_close_to_tray, load_config, load_custom, load_fan_settings, load_thermal_notify, CurveTarget, CustomCurve, Lang};
 use crate::{details, ec, klc};
 use crate::theme::{FONT_FAMILY, Theme, ThemeMode, DARK, LIGHT};
 use crate::tray::TrayCommand;
@@ -216,6 +216,8 @@ pub(crate) struct AppState {
     pub(crate) page_scroll: ScrollHandle,
     /// 关闭窗口时是否最小化到托盘。
     pub(crate) close_to_tray: bool,
+    /// 是否发送温控换档/高温桌面通知。
+    pub(crate) thermal_notify: bool,
     /// 上次应用的曲线预设，用于高亮当前预设。
     pub(crate) fan_preset: Option<String>,
     /// 上次看到的温控档位；用于换档通知。
@@ -269,6 +271,7 @@ impl AppState {
             compact: false,
             page_scroll: ScrollHandle::new(),
             close_to_tray: load_close_to_tray(),
+            thermal_notify: load_thermal_notify(),
             fan_preset: saved_fan_preset.clone(),
             thermal_level_seen: None,
             last_hot_notify: None,
@@ -276,6 +279,7 @@ impl AppState {
         };
         state.start_event_loop(cx, events);
         state.restore_fan_config(cx, saved_fan_mode, saved_fan_preset, saved_shift_mode);
+        state.set_page(page);
         state
     }
 
@@ -338,13 +342,13 @@ impl AppState {
         // 温控换档与高温提醒。首次采样只记录基线，不打扰用户。
         let level = self.status.thermal_level;
         if let Some(previous) = self.thermal_level_seen {
-            if previous != level {
+            if previous != level && self.thermal_notify {
                 self.notify_thermal_level(level);
             }
         } else {
             self.thermal_level_seen = Some(level);
         }
-        if self.status.tctl >= 88 {
+        if self.thermal_notify && self.status.tctl >= 88 {
             let due = self
                 .last_hot_notify
                 .is_none_or(|at| at.elapsed() >= Duration::from_secs(900));

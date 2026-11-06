@@ -257,6 +257,35 @@ impl AppState {
                     )),
             );
 
+        let notifications = self
+            .card()
+            .flex()
+            .justify_between()
+            .items_center()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .child(self.label(self.t("温控消息提醒", "Thermal notifications")))
+                    .child(self.hint(self.t(
+                        "换档、紧急锁存和高温提醒通过桌面通知发送。",
+                        "Level changes, the emergency latch and high-temperature alerts are sent as desktop notifications.",
+                    ))),
+            )
+            .child(self.switch(
+                "thermal-notify-toggle",
+                self.thermal_notify,
+                cx,
+                |this, cx| {
+                    this.thermal_notify = !this.thermal_notify;
+                    save_thermal_notify(this.thermal_notify);
+                    cx.notify();
+                },
+            ));
+
         let window = self
             .card()
             .flex()
@@ -316,6 +345,8 @@ impl AppState {
             .child(appearance)
             .child(self.page_section("电源与设备", "Power & devices"))
             .child(power)
+            .child(self.page_section("通知", "Notifications"))
+            .child(notifications)
             .child(self.page_section("窗口", "Window"))
             .child(window)
             .child(self.page_section("关于", "About"))
