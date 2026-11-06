@@ -369,14 +369,21 @@ fn next_level(
         3 => config.down3,
         _ => config.down1,
     };
-    if temp <= down
-        && now.duration_since(last_change) >= Duration::from_millis(config.dwell_ms)
-    {
-        level - 1
-    } else {
-        level
+    if temp <= down {
+        // 距阈值差的越远说明降温已稳定，立即降档；只有贴近阈值时
+        // 才需要停留时间防抖，避免温度在回调点附近反复横跳。
+        let settled = down - temp >= RECOVERY_MARGIN_C;
+        let dwell_ok =
+            now.duration_since(last_change) >= Duration::from_millis(config.dwell_ms);
+        if settled || dwell_ok {
+            return level - 1;
+        }
     }
+    level
 }
+
+/// 回落幅度超过该温度值时立即降档，不受停留时间限制。
+const RECOVERY_MARGIN_C: i32 = 8;
 
 fn latch_ok(
     temp: i32,
@@ -661,6 +668,27 @@ mod tests {
     }
 
     #[test]
+    fn deep_recovery_drops_immediately() {
+        let cfg = config();
+        let now = Instant::now();
+        let mut cool = None;
+        // 温度远低于回落阈值时，不需要停留 8 s，直接逐档快速恢复。
+        assert_eq!(
+            next_level(2, 50, now, now, &mut cool, &cfg),
+            1
+        );
+        assert_eq!(
+            next_level(1, 50, now, now, &mut cool, &cfg),
+            0
+        );
+        // 差值小于阈值缓冲时仍需停留，避免贴近阈值震荡。
+        assert_eq!(
+            next_level(1, 84, now, now, &mut cool, &cfg),
+            1
+        );
+    }
+
+    #[test]
     fn level_three_latches_until_cool_for_thirty_seconds() {
         let cfg = config();
         let start = Instant::now();
@@ -759,6 +787,6 @@ mod tests {
         assert!(validate_config(&cfg).is_err()); // cap2 > cap1，档位不降频
         let mut cfg = ThermalConfig::default();
         apply_rules(&mut cfg, &ThermalRules { cap2: Some(3_000_000), ..Default::default() });
-        assert!(validate_config(&cfg).is_err()); // 降档 2 关 boost，不得超过基础频率
+        assert!(validate_config(&cfg).is_err()); // 深度降频关 boost，不得超过基础频率
     }
 }

@@ -394,12 +394,12 @@ impl AppState {
                 "low",
             ),
             1 => (
-                self.t("温控：降档 1", "Thermal: level 1"),
+                self.t("温控：降频", "Thermal: cautious"),
                 format!("{} {:.1} GHz", self.t("上限", "cap"), cap),
                 "normal",
             ),
             2 => (
-                self.t("温控：降档 2", "Thermal: level 2"),
+                self.t("温控：深度降频", "Thermal: aggressive"),
                 format!(
                     "{} {:.1} GHz · boost {}",
                     self.t("上限", "cap"),

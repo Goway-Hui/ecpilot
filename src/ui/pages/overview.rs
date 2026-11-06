@@ -301,8 +301,8 @@ impl AppState {
 
         let (level_text, level_color) = match self.status.thermal_level {
             0 => (self.t("正常", "Normal"), theme.green),
-            1 => (self.t("降档 1", "Level 1"), theme.yellow),
-            2 => (self.t("降档 2", "Level 2"), theme.peach),
+            1 => (self.t("降频", "Cautious"), theme.yellow),
+            2 => (self.t("深度降频", "Aggressive"), theme.peach),
             _ => (self.t("紧急锁存", "Emergency"), theme.red),
         };
         let cap = if self.status.thermal_cap_mhz > 0 {

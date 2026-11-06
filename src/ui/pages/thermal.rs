@@ -10,8 +10,8 @@ impl AppState {
         let active = self.status.thermal_active;
         let level_name = |value: i32| match value {
             0 => self.t("正常", "Normal"),
-            1 => self.t("降档 1", "Level 1"),
-            2 => self.t("降档 2", "Level 2"),
+            1 => self.t("降频", "Cautious"),
+            2 => self.t("深度降频", "Aggressive"),
             _ => self.t("紧急锁存", "Emergency latch"),
         };
         let (level_text, level_color) = (
@@ -114,8 +114,8 @@ impl AppState {
         };
         let level_names = [
             ("正常", "Normal"),
-            ("降档 1", "Level 1"),
-            ("降档 2", "Level 2"),
+            ("降频", "Cautious"),
+            ("深度降频", "Aggressive"),
             ("紧急锁存", "Emergency"),
         ];
         let level_colors = [theme.green, theme.yellow, theme.peach, theme.red];
@@ -172,7 +172,7 @@ impl AppState {
                             .text_color(rgb(theme.faint))
                             .child(if self.lang == Lang::Zh {
                                 format!(
-                                    "回落 ≤{}/{}{} °C · 停留 {:.0} s",
+                                    "回落 ≤{}/{}{} °C · 停留 {:.0} s · 深回落即时",
                                     cfg.down1,
                                     cfg.down2,
                                     cfg.down3,
@@ -180,7 +180,7 @@ impl AppState {
                                 )
                             } else {
                                 format!(
-                                    "down ≤ {}/{}{} °C · dwell {:.0} s",
+                                    "down ≤ {}/{}{} °C · dwell {:.0} s · fast recovery",
                                     cfg.down1,
                                     cfg.down2,
                                     cfg.down3,
@@ -370,8 +370,8 @@ impl AppState {
 
         let cfg = self.rules_edit.unwrap_or(self.status.thermal_config);
         let triggers = [
-            ("thermal-trig1-down", "thermal-trig1-up", 0usize, self.t("降档 1 触发", "Level 1 at"), cfg.up1),
-            ("thermal-trig2-down", "thermal-trig2-up", 1, self.t("降档 2 触发", "Level 2 at"), cfg.up2),
+            ("thermal-trig1-down", "thermal-trig1-up", 0usize, self.t("降频触发", "Cautious at"), cfg.up1),
+            ("thermal-trig2-down", "thermal-trig2-up", 1, self.t("深度降频触发", "Aggressive at"), cfg.up2),
             ("thermal-trig3-down", "thermal-trig3-up", 2, self.t("紧急触发", "Emergency at"), cfg.up3),
         ];
         let mut trigger_col = div()
@@ -438,8 +438,8 @@ impl AppState {
 
         let caps = [
             ("thermal-cap0-down", "thermal-cap0-up", 0usize, self.t("正常", "Normal"), cfg_cap(self, 0)),
-            ("thermal-cap1-down", "thermal-cap1-up", 1, self.t("降档 1", "Level 1"), cfg_cap(self, 1)),
-            ("thermal-cap2-down", "thermal-cap2-up", 2, self.t("降档 2", "Level 2"), cfg_cap(self, 2)),
+            ("thermal-cap1-down", "thermal-cap1-up", 1, self.t("降频", "Cautious"), cfg_cap(self, 1)),
+            ("thermal-cap2-down", "thermal-cap2-up", 2, self.t("深度降频", "Aggressive"), cfg_cap(self, 2)),
             ("thermal-cap3-down", "thermal-cap3-up", 3, self.t("紧急锁存", "Emergency"), cfg_cap(self, 3)),
         ];
         let mut cap_col = div()
@@ -456,7 +456,7 @@ impl AppState {
                     .child(self.hint(format!(
                         "{} / {} {} · {} {:.1} GHz",
                         self.t("正常", "Normal"),
-                        self.t("降档 1", "L1"),
+                        self.t("降频", "Freq"),
                         self.t("boost", "boost"),
                         self.t("基础", "base"),
                         base_mhz as f32 / 1000.0
