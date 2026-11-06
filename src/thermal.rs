@@ -304,6 +304,7 @@ fn run(guard: &ThermalGuard) {
                 &config,
             );
             if next != level {
+                eprintln!("thermal guard: level {level} -> {next} at {temp} °C");
                 level = next;
                 last_change = now;
                 cool_since = None;

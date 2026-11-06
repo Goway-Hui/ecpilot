@@ -83,48 +83,136 @@ impl AppState {
                 }
             )));
 
-        let rules = self
+        let cfg = self.status.thermal_config;
+        let cap_ghz = |khz: i32| format!("{:.1} GHz", khz as f32 / 1_000_000.0);
+        let level_desc = |index: usize| match index {
+            0 if self.lang == Lang::Zh => format!(
+                "≤{} °C → {}，boost {}",
+                cfg.up1,
+                cap_ghz(cfg.cap0),
+                self.t("开", "on")
+            ),
+            0 => format!("≤ {} °C → {} · boost on", cfg.up1, cap_ghz(cfg.cap0)),
+            1 if self.lang == Lang::Zh => format!(
+                "≥{} °C → {}，boost {}",
+                cfg.up1,
+                cap_ghz(cfg.cap1),
+                self.t("开", "on")
+            ),
+            1 => format!("≥ {} °C → {} · boost on", cfg.up1, cap_ghz(cfg.cap1)),
+            2 if self.lang == Lang::Zh => format!(
+                "≥{} °C → {}，boost {}",
+                cfg.up2,
+                cap_ghz(cfg.cap2),
+                self.t("关", "off")
+            ),
+            2 => format!("≥ {} °C → {} · boost off", cfg.up2, cap_ghz(cfg.cap2)),
+            _ if self.lang == Lang::Zh => {
+                format!("≥{} °C → {}，热锁存", cfg.up3, cap_ghz(cfg.cap3),)
+            }
+            _ => format!("≥ {} °C → {} · thermal latch", cfg.up3, cap_ghz(cfg.cap3)),
+        };
+        let level_names = [
+            ("正常", "Normal"),
+            ("降档 1", "Level 1"),
+            ("降档 2", "Level 2"),
+            ("紧急锁存", "Emergency"),
+        ];
+        let level_colors = [theme.green, theme.yellow, theme.peach, theme.red];
+        let mut rules = self
             .card()
             .flex_1()
             .flex()
             .flex_col()
-            .gap(px(6.0))
-            .child(self.card_title("档位规则", "Level rules"))
-            .child({
-                let config = &self.status.thermal_config;
-                let cap = |khz: i32| khz as f32 / 1_000_000.0;
-                self.hint(if self.lang == Lang::Zh {
-                    format!(
-                        "0：≤{}°C → {:.1} GHz，boost 开\n1：≥{}°C → {:.1} GHz\n2：≥{}°C → {:.1} GHz，boost 关\n3：≥{}°C → {:.1} GHz，热锁存",
-                        config.up1, cap(config.cap0), config.up1, cap(config.cap1),
-                        config.up2, cap(config.cap2), config.up3, cap(config.cap3)
+            .gap(px(10.0))
+            .child(self.card_title("档位规则", "Level rules"));
+        for index in 0..4 {
+            let (zh, en) = level_names[index];
+            let color = level_colors[index];
+            rules = rules.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .w(px(6.0))
+                            .h(px(6.0))
+                            .rounded(px(3.0))
+                            .bg(rgb(color)),
                     )
-                } else {
-                    format!(
-                        "0: <= {}°C -> {:.1} GHz, boost on\n1: >= {}°C -> {:.1} GHz\n2: >= {}°C -> {:.1} GHz, boost off\n3: >= {}°C -> {:.1} GHz, thermal latch",
-                        config.up1, cap(config.cap0), config.up1, cap(config.cap1),
-                        config.up2, cap(config.cap2), config.up3, cap(config.cap3)
+                    .child(
+                        div()
+                            .min_w(px(72.0))
+                            .text_size(px(15.0))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(rgb(color))
+                            .child(self.t(zh, en)),
                     )
-                })
-            })
-            .child({
-                let config = &self.status.thermal_config;
-                self.hint(if self.lang == Lang::Zh {
-                    format!(
-                        "回落 ≤{}/{}/{}°C · 停留 {} ms\n锁存 {}°C/{}s · 采样 {} ms · 安全档 {:.1} GHz",
-                        config.down1, config.down2, config.down3,
-                        config.dwell_ms, config.latch_temp, config.latch_secs, config.sample_ms,
-                        config.base_khz as f32 / 1_000_000.0
+                    .child(
+                        div()
+                            .text_size(px(14.5))
+                            .text_color(rgb(theme.text))
+                            .child(level_desc(index)),
+                    ),
+            );
+        }
+        rules = rules
+            .child(div().h(px(1.0)).w_full().bg(rgb(theme.border)))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.0))
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .line_height(px(18.0))
+                            .whitespace_normal()
+                            .text_color(rgb(theme.faint))
+                            .child(if self.lang == Lang::Zh {
+                                format!(
+                                    "回落 ≤{}/{}{} °C · 停留 {:.0} s",
+                                    cfg.down1,
+                                    cfg.down2,
+                                    cfg.down3,
+                                    cfg.dwell_ms as f32 / 1000.0
+                                )
+                            } else {
+                                format!(
+                                    "down ≤ {}/{}{} °C · dwell {:.0} s",
+                                    cfg.down1,
+                                    cfg.down2,
+                                    cfg.down3,
+                                    cfg.dwell_ms as f32 / 1000.0
+                                )
+                            }),
                     )
-                } else {
-                    format!(
-                        "down <= {}/{}/{}°C · dwell {} ms\nlatch {}°C/{}s · sample {} ms · safe {:.1} GHz",
-                        config.down1, config.down2, config.down3,
-                        config.dwell_ms, config.latch_temp, config.latch_secs, config.sample_ms,
-                        config.base_khz as f32 / 1_000_000.0
-                    )
-                })
-            });
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .line_height(px(18.0))
+                            .whitespace_normal()
+                            .text_color(rgb(theme.faint))
+                            .child(if self.lang == Lang::Zh {
+                                format!(
+                                    "锁存 {} °C / {} s · 采样 {} ms · 安全档 {}",
+                                    cfg.latch_temp,
+                                    cfg.latch_secs,
+                                    cfg.sample_ms,
+                                    cap_ghz(cfg.base_khz)
+                                )
+                            } else {
+                                format!(
+                                    "latch {} °C / {} s · sample {} ms · safe {}",
+                                    cfg.latch_temp,
+                                    cfg.latch_secs,
+                                    cfg.sample_ms,
+                                    cap_ghz(cfg.base_khz)
+                                )
+                            }),
+                    ),
+            );
 
         let toggle: AnyElement = if active {
             self.action_button(
