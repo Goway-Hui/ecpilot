@@ -18,8 +18,21 @@ use std::time::{Duration, Instant};
 const CPUFREQ: &str = "/sys/devices/system/cpu/cpufreq";
 const ENABLED_PATH: &str = "/var/lib/ecpilot/thermal-enabled";
 const LEGACY_ENABLED_PATH: &str = "/var/lib/mcontrolcenter-gpui/thermal-enabled";
+const MANUAL_PATH: &str = "/var/lib/ecpilot/thermal-manual";
+const CAP_PATH: &str = "/var/lib/ecpilot/thermal-cap-khz";
+const BOOST_PATH: &str = "/var/lib/ecpilot/thermal-boost";
+const LEVEL_PATH: &str = "/var/lib/ecpilot/thermal-level";
+const MIN_CAP_KHZ: i32 = 800_000;
 
 use crate::thermal_config::ThermalConfig;
+
+/// 手动模式的目标值；整体加锁，避免 worker 读到半更新的组合。
+#[derive(Clone, Copy)]
+struct ManualState {
+    level: i32,
+    cap: i32,
+    boost: bool,
+}
 
 /// helper 与后台线程共享的温控状态。
 pub struct ThermalGuard {
@@ -29,6 +42,9 @@ pub struct ThermalGuard {
     cap_khz: AtomicI32,
     temp: AtomicI32,
     boost: AtomicBool,
+    manual: AtomicBool,
+    manual_state: Mutex<ManualState>,
+    manual_dirty: AtomicBool,
     restart: AtomicBool,
     no_boost: bool,
     error: Mutex<Option<String>>,
@@ -40,13 +56,32 @@ impl ThermalGuard {
         let config = ThermalConfig::from_env();
         let enabled = load_enabled();
         let no_boost = last_boot_thermal_trip();
+        let manual = load_bool(MANUAL_PATH, false);
+        let manual_level = load_i32(LEVEL_PATH, 0).clamp(-1, 3);
+        let manual_cap =
+            load_i32(CAP_PATH, config.cap0).clamp(MIN_CAP_KHZ, max_cap_khz());
+        let manual_boost = load_bool(BOOST_PATH, true) && !no_boost;
+        let level = if manual { manual_level } else { 0 };
+        let cap = if enabled {
+            if manual { manual_cap } else { config.cap0 }
+        } else {
+            config.base_khz
+        };
+        let boost = enabled && if manual { manual_boost } else { !no_boost };
         let guard = Arc::new(Self {
             config,
             enabled: AtomicBool::new(enabled),
-            level: AtomicI32::new(0),
-            cap_khz: AtomicI32::new(if enabled { config.cap0 } else { config.base_khz }),
+            level: AtomicI32::new(level),
+            cap_khz: AtomicI32::new(cap),
             temp: AtomicI32::new(0),
-            boost: AtomicBool::new(enabled && !no_boost),
+            boost: AtomicBool::new(boost),
+            manual: AtomicBool::new(manual),
+            manual_state: Mutex::new(ManualState {
+                level: manual_level,
+                cap: manual_cap,
+                boost: manual_boost,
+            }),
+            manual_dirty: AtomicBool::new(false),
             restart: AtomicBool::new(false),
             no_boost,
             error: Mutex::new(None),
@@ -86,23 +121,74 @@ impl ThermalGuard {
         serde_json::to_string(&self.config).unwrap_or_default()
     }
 
+    /// 是否处于手动模式。
+    pub fn manual(&self) -> bool {
+        self.manual.load(Ordering::SeqCst)
+    }
+
     /// 启用/停用并持久化；停用时线程落安全档。
     pub fn set_enabled(&self, on: bool) -> Result<(), String> {
         // 先写磁盘，磁盘失败时不要把内存状态也翻转，避免状态与磁盘不一致。
-        if let Some(parent) = std::path::Path::new(ENABLED_PATH).parent() {
-            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-        }
-        let enabled_path = std::path::Path::new(ENABLED_PATH);
-        let temp = enabled_path.with_extension("tmp");
-        std::fs::write(&temp, if on { "1" } else { "0" }).map_err(|error| error.to_string())?;
-        std::fs::rename(&temp, enabled_path).map_err(|error| error.to_string())?;
+        write_state(ENABLED_PATH, if on { "1" } else { "0" })?;
         self.enabled.store(on, Ordering::Relaxed);
+        if on {
+            self.manual_dirty.store(true, Ordering::SeqCst);
+        }
         Ok(())
     }
 
-    /// 重新从 0 档开始应用参数。
+    /// 切换自动/手动模式并持久化。
+    pub fn set_manual(&self, manual: bool) -> Result<(), String> {
+        write_state(MANUAL_PATH, if manual { "1" } else { "0" })?;
+        self.manual.store(manual, Ordering::SeqCst);
+        if manual {
+            self.manual_dirty.store(true, Ordering::SeqCst);
+        } else {
+            self.restart.store(true, Ordering::Relaxed);
+        }
+        Ok(())
+    }
+
+    /// 手动选择 0..=3 档，使用该档的配置频率与 boost 策略。
+    pub fn set_level(&self, level: i32) -> Result<(), String> {
+        if !(0..=3).contains(&level) {
+            return Err("thermal level must be 0..=3".into());
+        }
+        let (cap, boost) = level_target(&self.config, level, self.no_boost);
+        self.store_manual(level, cap, boost)
+    }
+
+    /// 手动设置频率上限（kHz）与 boost。
+    pub fn set_frequency(&self, cap_khz: i32, boost: bool) -> Result<(), String> {
+        if boost && self.no_boost {
+            return Err("boost is disabled after a thermal trip".into());
+        }
+        let mut cap = cap_khz.clamp(MIN_CAP_KHZ, max_cap_khz());
+        // 关闭 boost 时内核只能到基础频率；把上限钳到基础频率，
+        // 避免写入后被内核拒绝。提高上限时由 GUI 自动开启 boost。
+        if !boost && cap > self.config.base_khz {
+            cap = self.config.base_khz;
+        }
+        self.store_manual(-1, cap, boost)
+    }
+
+    fn store_manual(&self, level: i32, cap: i32, boost: bool) -> Result<(), String> {
+        write_state(MANUAL_PATH, "1")?;
+        write_state(CAP_PATH, &cap.to_string())?;
+        write_state(BOOST_PATH, if boost { "1" } else { "0" })?;
+        write_state(LEVEL_PATH, &level.to_string())?;
+        if let Ok(mut state) = self.manual_state.lock() {
+            *state = ManualState { level, cap, boost };
+        }
+        self.manual.store(true, Ordering::SeqCst);
+        self.manual_dirty.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// 重新应用参数：自动模式回到 0 档，手动模式重放当前设定。
     pub fn restart(&self) {
         self.restart.store(true, Ordering::Relaxed);
+        self.manual_dirty.store(true, Ordering::Relaxed);
     }
 
     /// 停止保护并落安全档；用于 SIGTERM / panic。
@@ -125,6 +211,7 @@ fn run(guard: &ThermalGuard) {
     let config = &guard.config;
     let mut level = 0i32;
     let mut last_enabled: Option<bool> = None;
+    let mut last_manual: Option<(i32, bool)> = None;
     let mut last_change = Instant::now();
     let mut cool_since: Option<Instant> = None;
     let mut verify_countdown = 0u32;
@@ -144,10 +231,41 @@ fn run(guard: &ThermalGuard) {
                 guard.cap_khz.store(config.base_khz, Ordering::Relaxed);
                 guard.boost.store(false, Ordering::Relaxed);
                 last_enabled = Some(false);
+                last_manual = None;
             }
             std::thread::sleep(Duration::from_millis(config.sample_ms));
             continue;
         }
+
+        if guard.manual.load(Ordering::SeqCst) {
+            let state = guard
+                .manual_state
+                .lock()
+                .map(|state| *state)
+                .unwrap_or(ManualState {
+                    level: -1,
+                    cap: config.base_khz,
+                    boost: false,
+                });
+            let dirty = guard.manual_dirty.swap(false, Ordering::SeqCst);
+            if dirty || last_manual != Some((state.cap, state.boost)) {
+                if state.boost && !guard.boost.load(Ordering::Relaxed) {
+                    let _ = apply_cap(config, config.base_khz, true, &guard.error);
+                }
+                let _ = apply_cap(config, state.cap, state.boost, &guard.error);
+                guard.cap_khz.store(state.cap, Ordering::Relaxed);
+                guard.boost.store(state.boost, Ordering::Relaxed);
+                guard.level.store(state.level, Ordering::Relaxed);
+                last_manual = Some((state.cap, state.boost));
+            }
+            if let Some(temp) = read_temps().map(|temps| temps.0.max(temps.1).max(temps.2)) {
+                guard.temp.store(temp, Ordering::Relaxed);
+            }
+            last_enabled = Some(true);
+            std::thread::sleep(Duration::from_millis(config.sample_ms));
+            continue;
+        }
+        last_manual = None;
 
         if last_enabled != Some(true) || guard.restart.swap(false, Ordering::Relaxed) {
             level = 0;
@@ -177,6 +295,24 @@ fn run(guard: &ThermalGuard) {
         }
 
         std::thread::sleep(Duration::from_millis(config.sample_ms));
+    }
+}
+
+/// 档位对应的配置频率与 boost 策略。
+fn level_target(config: &ThermalConfig, level: i32, no_boost: bool) -> (i32, bool) {
+    if no_boost {
+        // 上次热断电后不允许 boost；高于基础频率的档位改用基础频率。
+        return match level {
+            2 => (config.cap2, false),
+            3 => (config.cap3, false),
+            _ => (config.base_khz, false),
+        };
+    }
+    match level {
+        1 => (config.cap1, true),
+        2 => (config.cap2, false),
+        3 => (config.cap3, false),
+        _ => (config.cap0, true),
     }
 }
 
@@ -243,18 +379,17 @@ fn latch_ok(
 }
 
 fn apply_level(guard: &ThermalGuard, level: i32) {
-    let (cap, boost) = match level {
-        1 => (guard.config.cap1, !guard.no_boost),
-        2 => (guard.config.cap2, false),
-        3 => (guard.config.cap3, false),
-        _ => {
-            if guard.no_boost {
-                (guard.config.base_khz, false)
-            } else {
-                (guard.config.cap0, true)
-            }
-        }
-    };
+    let (cap, boost) = level_target(&guard.config, level, guard.no_boost);
+    // 从 boost 关闭切到开启时，先以基础频率打开 boost，再提高上限：
+    // 否则内核会在 boost 尚未生效时把 scaling_max_freq 钳回基础频率。
+    if boost && !guard.boost.load(Ordering::Relaxed) {
+        let _ = apply_cap(
+            &guard.config,
+            guard.config.base_khz,
+            true,
+            &guard.error,
+        );
+    }
     if apply_cap(&guard.config, cap, boost, &guard.error).is_err() {
         // 错误已写入 guard.error；继续保留意图值供 UI 展示。
     }
@@ -291,6 +426,16 @@ fn apply_cap(
     if policies.is_empty() {
         failures.push(format!("no cpufreq policies under {CPUFREQ}"));
     }
+    let boost_path = format!("{CPUFREQ}/boost");
+    let boost_value = if boost { "1" } else { "0" };
+    // 开启 boost 必须先于提高频率：关闭 boost 时内核会把 scaling_max_freq
+    // 钳到基础频率，先写高频再开 boost 会留下错误的低频上限。
+    if boost {
+        for _ in 0..2 {
+            let _ = fs::write(&boost_path, boost_value);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
     // 写两遍再读回：systemd restart 时旧 helper 可能正在写安全档，
     // 单次立即读回会看到旧值，造成假错误。
     for _ in 0..2 {
@@ -310,11 +455,12 @@ fn apply_cap(
         }
         std::thread::sleep(Duration::from_millis(150));
     }
-    let boost_path = format!("{CPUFREQ}/boost");
-    let boost_value = if boost { "1" } else { "0" };
-    for _ in 0..2 {
-        let _ = fs::write(&boost_path, boost_value);
-        std::thread::sleep(Duration::from_millis(20));
+    if !boost {
+        // 先降低频率，再关 boost，避免关闭瞬间被钳到更低值。
+        for _ in 0..2 {
+            let _ = fs::write(&boost_path, boost_value);
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
     if failures.is_empty() {
         if let Ok(mut error) = error.lock() {
@@ -434,6 +580,41 @@ fn load_enabled() -> bool {
         .unwrap_or(true)
 }
 
+/// 原子写入 `/var/lib/ecpilot` 下的状态文件。
+fn write_state(path: &str, value: &str) -> Result<(), String> {
+    let path = std::path::Path::new(path);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let temp = path.with_extension("tmp");
+    fs::write(&temp, value).map_err(|error| error.to_string())?;
+    fs::rename(&temp, path).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn load_bool(path: &str, default: bool) -> bool {
+    fs::read_to_string(path)
+        .map(|value| value.trim() != "0")
+        .unwrap_or(default)
+}
+
+fn load_i32(path: &str, default: i32) -> i32 {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(default)
+}
+
+fn max_cap_khz() -> i32 {
+    // amd-pstate 的 cpuinfo_max_freq 会随 boost 开关变化；优先读取静态
+    // 硬件上限，避免 boost 关闭时把用户请求的高频误钳到基础频率。
+    fs::read_to_string("/sys/devices/system/cpu/cpu0/cpufreq/amd_pstate_max_freq")
+        .or_else(|_| fs::read_to_string("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq"))
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(5_200_000)
+}
+
 /// 上次启动若是热断电，强制关闭 boost，避免重启后再次满载跳闸。
 fn last_boot_thermal_trip() -> bool {
     Command::new("dmesg")
@@ -499,6 +680,17 @@ mod tests {
             ),
             2
         );
+    }
+
+    #[test]
+    fn manual_levels_map_to_configured_caps() {
+        let cfg = config();
+        assert_eq!(level_target(&cfg, 0, false), (cfg.cap0, true));
+        assert_eq!(level_target(&cfg, 1, false), (cfg.cap1, true));
+        assert_eq!(level_target(&cfg, 2, false), (cfg.cap2, false));
+        assert_eq!(level_target(&cfg, 3, false), (cfg.cap3, false));
+        assert_eq!(level_target(&cfg, 0, true), (cfg.base_khz, false));
+        assert_eq!(level_target(&cfg, 1, true), (cfg.base_khz, false));
     }
 
     #[test]

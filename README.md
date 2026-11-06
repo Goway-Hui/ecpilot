@@ -90,9 +90,12 @@ The thermal guard is built into `ecpilot-helper`: it samples
 the multi-level CPU cap directly via cpufreq/EPP/boost. No external
 `thermal-guard` script or systemd unit is required. Enable, disable or restart
 it from the **温控 / Thermal** page; disabling applies the safe state (base
-frequency, boost off). The enabled state and parameters persist in
-`/var/lib/ecpilot/`; thresholds/caps can be overridden with
-`MCC_THERMAL_*` environment variables on the helper service.
+frequency, boost off). The same page has a manual mode: pin level 0-3, set a
+frequency cap in 100 MHz steps (1.5 / 2.4 / 3.8 / 4.2 GHz presets) and toggle
+boost. Turning boost off caps at the base frequency; raising the cap turns boost
+back on. Manual settings and the guard's enabled state persist in
+`/var/lib/ecpilot/`; auto mode remains the default. Thresholds/caps can be
+overridden with `MCC_THERMAL_*` environment variables on the helper service.
 
 Uninstall the app and helper:
 

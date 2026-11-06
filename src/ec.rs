@@ -44,7 +44,9 @@ pub struct Status {
     pub tccd2: i32,
     /// 内置温控是否启用。
     pub thermal_active: bool,
-    /// 内置温控当前档位（0-3）。
+    /// 内置温控是否处于手动模式。
+    pub thermal_manual: bool,
+    /// 内置温控当前档位（0-3；-1 表示手动自定义频率）。
     pub thermal_level: i32,
     /// 当前档位的频率上限（MHz，0 表示不限制）。
     pub thermal_cap_mhz: i32,
@@ -138,6 +140,10 @@ pub fn read_status() -> Status {
             if let Ok(parsed) = serde_json::from_str(&json) {
                 status.thermal_config = parsed;
             }
+        }
+        let manual: Result<bool, _> = proxy.call("thermalManual", &());
+        if let Ok(manual) = manual {
+            status.thermal_manual = manual;
         }
     }
     if let Some((_, base)) = hwmon.iter().find(|(name, _)| name == "amdgpu") {
@@ -317,6 +323,30 @@ pub fn restart_thermal_guard() -> Result<()> {
     dbus_proxy()?
         .call_method("restartThermalGuard", &())
         .context("calling restartThermalGuard")?;
+    Ok(())
+}
+
+/// 切换自动/手动温控。
+pub fn set_thermal_manual(on: bool) -> Result<()> {
+    dbus_proxy()?
+        .call_method("setThermalManual", &(on,))
+        .context("calling setThermalManual")?;
+    Ok(())
+}
+
+/// 手动选择 0..=3 档。
+pub fn set_thermal_level(level: i32) -> Result<()> {
+    dbus_proxy()?
+        .call_method("setThermalLevel", &(level,))
+        .context("calling setThermalLevel")?;
+    Ok(())
+}
+
+/// 手动设置频率上限（kHz）与 boost。
+pub fn set_thermal_frequency(cap_khz: i32, boost: bool) -> Result<()> {
+    dbus_proxy()?
+        .call_method("setThermalFrequency", &(cap_khz, boost))
+        .context("calling setThermalFrequency")?;
     Ok(())
 }
 

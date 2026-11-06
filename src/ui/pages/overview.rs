@@ -299,11 +299,15 @@ impl AppState {
                     )),
             );
 
-        let (level_text, level_color) = match self.status.thermal_level {
-            0 => (self.t("正常", "Normal"), theme.green),
-            1 => (self.t("降档 1", "Level 1"), theme.yellow),
-            2 => (self.t("降档 2", "Level 2"), theme.peach),
-            _ => (self.t("紧急锁存", "Emergency"), theme.red),
+        let (level_text, level_color) = if self.status.thermal_manual {
+            (self.t("手动", "Manual"), theme.accent)
+        } else {
+            match self.status.thermal_level {
+                0 => (self.t("正常", "Normal"), theme.green),
+                1 => (self.t("降档 1", "Level 1"), theme.yellow),
+                2 => (self.t("降档 2", "Level 2"), theme.peach),
+                _ => (self.t("紧急锁存", "Emergency"), theme.red),
+            }
         };
         let cap = if self.status.thermal_cap_mhz > 0 {
             format!("{:.1} GHz", self.status.thermal_cap_mhz as f32 / 1000.0)
