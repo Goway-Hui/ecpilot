@@ -172,24 +172,9 @@ impl EcHelper {
         Ok(())
     }
 
-    #[zbus(name = "setThermalManual")]
-    fn set_thermal_manual(&self, manual: bool) -> zbus::fdo::Result<()> {
-        self.thermal.set_manual(manual).map_err(failed)
-    }
-
-    #[zbus(name = "setThermalLevel")]
-    fn set_thermal_level(&self, level: i32) -> zbus::fdo::Result<()> {
-        self.thermal.set_level(level).map_err(failed)
-    }
-
-    #[zbus(name = "setThermalFrequency")]
-    fn set_thermal_frequency(&self, cap_khz: i32, boost: bool) -> zbus::fdo::Result<()> {
-        self.thermal.set_frequency(cap_khz, boost).map_err(failed)
-    }
-
-    #[zbus(name = "thermalManual")]
-    fn thermal_manual(&self) -> bool {
-        self.thermal.manual()
+    #[zbus(name = "setThermalRules")]
+    fn set_thermal_rules(&self, json: String) -> zbus::fdo::Result<()> {
+        self.thermal.set_rules(&json).map_err(failed)
     }
 
     #[zbus(name = "thermalStatus")]

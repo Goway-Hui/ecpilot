@@ -936,8 +936,6 @@ impl AppState {
                                 env!("CARGO_PKG_VERSION"),
                                 if !self.status.thermal_active {
                                     self.t("温控已停止", "guard off")
-                                } else if self.status.thermal_manual {
-                                    self.t("温控手动", "guard manual")
                                 } else {
                                     self.t("温控运行中", "guard auto")
                                 }

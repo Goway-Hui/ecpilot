@@ -7,31 +7,22 @@ impl AppState {
     pub(super) fn thermal(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = self.theme();
         let level = self.status.thermal_level;
-        let manual = self.status.thermal_manual;
         let active = self.status.thermal_active;
         let level_name = |value: i32| match value {
             0 => self.t("正常", "Normal"),
             1 => self.t("降档 1", "Level 1"),
             2 => self.t("降档 2", "Level 2"),
-            3 => self.t("紧急锁存", "Emergency latch"),
-            _ => self.t("自定义", "Custom"),
+            _ => self.t("紧急锁存", "Emergency latch"),
         };
-        let (level_text, level_color) = if manual {
-            (
-                format!("{} · {}", self.t("手动", "Manual"), level_name(level)),
-                theme.accent,
-            )
-        } else {
-            (
-                level_name(level),
-                match level {
-                    0 => theme.green,
-                    1 => theme.yellow,
-                    2 => theme.peach,
-                    _ => theme.red,
-                },
-            )
-        };
+        let (level_text, level_color) = (
+            level_name(level),
+            match level {
+                0 => theme.green,
+                1 => theme.yellow,
+                2 => theme.peach,
+                _ => theme.red,
+            },
+        );
         let cap = if self.status.thermal_cap_mhz > 0 {
             format!("{:.1} GHz", self.status.thermal_cap_mhz as f32 / 1000.0)
         } else {
@@ -215,7 +206,7 @@ impl AppState {
                 "Runs in the helper; closing the app does not stop protection.",
             )));
 
-        let manual_card = self.manual_card(cx);
+        let rules_card = self.rules_card(cx);
 
         let sensors = if self.compact {
             div()
@@ -238,7 +229,7 @@ impl AppState {
             .flex_col()
             .gap(px(14.0))
             .child(sensors)
-            .child(manual_card)
+            .child(rules_card)
             .child(
                 div()
                     .flex()
@@ -284,18 +275,161 @@ impl AppState {
         page
     }
 
-    /// 手动温控卡：开关 + 档位、频率和 boost 控制。
-    fn manual_card(&mut self, cx: &mut Context<Self>) -> Div {
-        let manual = self.status.thermal_manual;
-        let body: AnyElement = if manual {
-            self.manual_body(cx).into_any_element()
-        } else {
-            self.hint(self.t(
-                "自动模式：档位由温度和停留时间决定。",
-                "Automatic mode: level follows temperature and dwell time.",
-            ))
-            .into_any_element()
-        };
+    /// 档位预设编辑卡：调整各档触发温度与频率上限，保存后立即生效并持久化。
+    fn rules_card(&mut self, cx: &mut Context<Self>) -> Div {
+        let theme = self.theme();
+        let base_mhz = self.status.thermal_config.base_khz / 1000;
+
+        let triggers = [
+            ("thermal-trig1", 0usize, self.t("降档 1 触发", "Level 1 at"), self.rules_edit.unwrap_or(self.status.thermal_config).up1),
+            ("thermal-trig2", 1, self.t("降档 2 触发", "Level 2 at"), self.rules_edit.unwrap_or(self.status.thermal_config).up2),
+            ("thermal-trig3", 2, self.t("紧急触发", "Emergency at"), self.rules_edit.unwrap_or(self.status.thermal_config).up3),
+        ];
+        let mut trigger_col = div()
+            .flex_1()
+            .min_w(px(250.0))
+            .flex()
+            .flex_col()
+            .gap(px(9.0))
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .child(self.hint(self.t("触发温度", "Trigger temperatures")))
+                    .child(self.hint(self.t(
+                        "回落 = 触发 − 5 °C",
+                        "down = trigger − 5 °C",
+                    ))),
+            );
+        for (id, index, label, temp) in triggers {
+            let step_down = move |this: &mut AppState, cx: &mut Context<AppState>| {
+                let draft = this.rules_edit.unwrap_or(this.status.thermal_config);
+                let draft = step_trigger(draft, index, -1);
+                save_rules(this, cx, draft);
+            };
+            let step_up = move |this: &mut AppState, cx: &mut Context<AppState>| {
+                let draft = this.rules_edit.unwrap_or(this.status.thermal_config);
+                let draft = step_trigger(draft, index, 1);
+                save_rules(this, cx, draft);
+            };
+            trigger_col = trigger_col.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .min_w(px(88.0))
+                            .text_size(px(12.5))
+                            .text_color(rgb(theme.faint))
+                            .child(label),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(
+                                div()
+                                    .min_w(px(56.0))
+                                    .text_size(px(15.0))
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .text_color(rgb(theme.text))
+                                    .child(format!("{temp} °C")),
+                            )
+                            .child(
+                                self.action_button(id, "− 1 °C".into(), false, cx, step_down),
+                            )
+                            .child(self.action_button(id, "+ 1 °C".into(), false, cx, step_up)),
+                    ),
+            );
+        }
+
+        let caps = [
+            ("thermal-cap0", 0usize, self.t("正常", "Normal"), cfg_cap(self, 0), true),
+            ("thermal-cap1", 1, self.t("降档 1", "Level 1"), cfg_cap(self, 1), true),
+            ("thermal-cap2", 2, self.t("降档 2", "Level 2"), cfg_cap(self, 2), false),
+            ("thermal-cap3", 3, self.t("紧急锁存", "Emergency"), cfg_cap(self, 3), false),
+        ];
+        let mut cap_col = div()
+            .flex_1()
+            .min_w(px(310.0))
+            .flex()
+            .flex_col()
+            .gap(px(9.0))
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .child(self.hint(self.t("频率上限", "Frequency caps")))
+                    .child(self.hint(format!(
+                        "{} / {} {} · {} {:.1} GHz",
+                        self.t("正常", "Normal"),
+                        self.t("降档 1", "L1"),
+                        self.t("boost", "boost"),
+                        self.t("基础", "base"),
+                        base_mhz as f32 / 1000.0
+                    ))),
+            );
+        for (id, index, label, cap_khz, with_boost) in caps {
+            let cap_mhz = cap_khz / 1000;
+            let step_down = move |this: &mut AppState, cx: &mut Context<AppState>| {
+                let base = this.status.thermal_config.base_khz / 1000;
+                let draft = this.rules_edit.unwrap_or(this.status.thermal_config);
+                let draft = step_cap(draft, index, -100, base);
+                save_rules(this, cx, draft);
+            };
+            let step_up = move |this: &mut AppState, cx: &mut Context<AppState>| {
+                let base = this.status.thermal_config.base_khz / 1000;
+                let draft = this.rules_edit.unwrap_or(this.status.thermal_config);
+                let draft = step_cap(draft, index, 100, base);
+                save_rules(this, cx, draft);
+            };
+            cap_col = cap_col.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .min_w(px(88.0))
+                            .text_size(px(12.5))
+                            .text_color(rgb(theme.faint))
+                            .child(label),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(
+                                div()
+                                    .min_w(px(58.0))
+                                    .text_size(px(15.0))
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .text_color(rgb(theme.text))
+                                    .child(format!("{:.1} GHz", cap_mhz as f32 / 1000.0)),
+                            )
+                            .child(
+                                self.action_button(id, "− 100 MHz".into(), false, cx, step_down),
+                            )
+                            .child(self.action_button(id, "+ 100 MHz".into(), false, cx, step_up)),
+                    ),
+            );
+            let _ = with_boost;
+        }
+
+        let reset = self.action_button(
+            "thermal-rules-reset",
+            self.t("恢复默认", "Defaults"),
+            false,
+            cx,
+            |this, cx| {
+                this.rules_edit = None;
+                this.run_action(cx, || ec::set_thermal_rules("{}".into()));
+            },
+        );
+
         self.card()
             .flex()
             .flex_col()
@@ -304,7 +438,7 @@ impl AppState {
                 div()
                     .flex()
                     .justify_between()
-                    .items_center()
+                    .items_start()
                     .child(
                         div()
                             .flex_1()
@@ -312,158 +446,87 @@ impl AppState {
                             .flex()
                             .flex_col()
                             .gap(px(2.0))
-                            .child(self.card_title("手动控制", "Manual control"))
-                            .child(self.hint(if manual {
-                                self.t(
-                                    "手动模式绕过自动降温；长时间使用请留意温度。",
-                                    "Manual mode bypasses automatic downshifts; watch the temperature.",
-                                )
-                            } else {
-                                self.t(
-                                    "打开后可固定档位与频率上限。",
-                                    "Turn it on to pin a level and a frequency cap.",
-                                )
-                            })),
+                            .child(self.card_title("预设调整", "Presets"))
+                            .child(self.hint(self.t(
+                                "各档触发温度与频率上限；保存后立即生效并持久化。",
+                                "Per-level triggers and caps; applied and persisted on save.",
+                            ))),
                     )
-                    .child(self.switch("thermal-manual", manual, cx, |this, cx| {
-                        let on = !this.status.thermal_manual;
-                        this.run_action(cx, move || ec::set_thermal_manual(on));
-                    })),
+                    .child(reset),
             )
-            .child(body)
-    }
-
-    fn manual_body(&mut self, cx: &mut Context<Self>) -> Div {
-        let level = self.status.thermal_level;
-        let cap_mhz = self.status.thermal_cap_mhz;
-        let boost = self.status.thermal_boost;
-        let base_mhz = self.status.thermal_config.base_khz / 1000;
-
-        let levels = [
-            ("thermal-level-0", 0, "正常", "Normal"),
-            ("thermal-level-1", 1, "降档 1", "Level 1"),
-            ("thermal-level-2", 2, "降档 2", "Level 2"),
-            ("thermal-level-3", 3, "紧急锁存", "Emergency"),
-        ];
-        let mut level_row = div()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap(px(8.0))
-            .child(self.hint(self.t("档位", "Level")));
-        for (id, value, zh, en) in levels {
-            level_row = level_row.child(self.pill(
-                id,
-                self.t(zh, en),
-                self.status.thermal_manual && level == value,
-                cx,
-                move |this, cx| this.run_action(cx, move || ec::set_thermal_level(value)),
-            ));
-        }
-
-        let presets = [
-            ("thermal-freq-1500", 1500),
-            ("thermal-freq-2400", 2400),
-            ("thermal-freq-3800", 3800),
-            ("thermal-freq-4200", 4200),
-        ];
-        let mut preset_row = div()
-            .flex()
-            .flex_wrap()
-            .gap(px(6.0))
-            .child(self.hint(self.t("预设", "Presets")));
-        for (id, mhz) in presets {
-            preset_row = preset_row.child(self.pill(
-                id,
-                format!("{:.1} GHz", mhz as f32 / 1000.0),
-                cap_mhz == mhz,
-                cx,
-                move |this, cx| {
-                    let boost = this.status.thermal_boost || mhz > base_mhz;
-                    this.run_action(cx, move || {
-                        ec::set_thermal_frequency(mhz * 1000, boost)
-                    });
-                },
-            ));
-        }
-
-        let down = (cap_mhz - 100).max(800);
-        let up = (cap_mhz + 100).min(5000);
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(10.0))
-            .child(level_row)
             .child(
                 div()
                     .flex()
                     .flex_wrap()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(self.hint(self.t("频率上限", "Frequency cap")))
-                    .child(
-                        div()
-                            .text_size(px(20.0))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(rgb(self.theme().text))
-                            .child(format!("{:.1} GHz", cap_mhz as f32 / 1000.0)),
-                    )
-                    .child(self.action_button(
-                        "thermal-freq-down",
-                        "− 100 MHz".into(),
-                        false,
-                        cx,
-                        move |this, cx| {
-                            let boost = this.status.thermal_boost;
-                            this.run_action(cx, move || {
-                                ec::set_thermal_frequency(down * 1000, boost)
-                            });
-                        },
-                    ))
-                    .child(self.action_button(
-                        "thermal-freq-up",
-                        "+ 100 MHz".into(),
-                        false,
-                        cx,
-                        move |this, cx| {
-                            let boost = this.status.thermal_boost || up > base_mhz;
-                            this.run_action(cx, move || {
-                                ec::set_thermal_frequency(up * 1000, boost)
-                            });
-                        },
-                    )),
+                    .gap(px(24.0))
+                    .child(trigger_col)
+                    .child(cap_col),
             )
-            .child(preset_row)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(self.hint("Boost".into()))
-                    .child(self.switch("thermal-boost", boost, cx, |this, cx| {
-                        let cap = this.status.thermal_cap_mhz.max(800);
-                        let next = !this.status.thermal_boost;
-                        this.run_action(cx, move || {
-                            ec::set_thermal_frequency(cap * 1000, next)
-                        });
-                    }))
-                    .child(self.hint(if boost {
-                        self.t("允许睿频", "boost allowed")
-                    } else {
-                        self.t("固定上限，不允许 boost", "capped, boost off")
-                    })),
-            )
-            .child(self.hint(format!(
-                "{} {:.1} GHz；{}",
-                self.t(
-                    "关闭 boost 时上限为基础频率",
-                    "With boost off the cap is the base frequency"
-                ),
-                base_mhz as f32 / 1000.0,
-                self.t(
-                    "提高上限会自动开启 boost，超出硬件范围时由 helper 截断。",
-                    "raising the cap turns boost on; the helper clamps it to the CPU range."
-                )
-            )))
     }
+}
+
+/// 读取草稿或生效参数中的档位频率（kHz）。
+fn cfg_cap(state: &AppState, index: usize) -> i32 {
+    let cfg = state.rules_edit.unwrap_or(state.status.thermal_config);
+    match index {
+        0 => cfg.cap0,
+        1 => cfg.cap1,
+        2 => cfg.cap2,
+        _ => cfg.cap3,
+    }
+}
+
+/// 保存规则草稿并立即应用到 helper。
+fn save_rules(this: &mut AppState, cx: &mut Context<AppState>, draft: ThermalConfig) {
+    this.rules_edit = Some(draft);
+    let json = serde_json::to_string(&draft).unwrap_or_default();
+    this.run_action(cx, move || ec::set_thermal_rules(json));
+}
+
+/// 步进某档触发温度并保持升序；回落温度由 helper 派生。
+fn step_trigger(mut cfg: ThermalConfig, index: usize, delta: i32) -> ThermalConfig {
+    let value = match index {
+        0 => cfg.up1 + delta,
+        1 => cfg.up2 + delta,
+        _ => cfg.up3 + delta,
+    };
+    match index {
+        0 => cfg.up1 = value.clamp(60, cfg.up2 - 1),
+        1 => cfg.up2 = value.clamp(cfg.up1 + 1, cfg.up3 - 1),
+        _ => cfg.up3 = value.clamp(cfg.up2 + 1, 110),
+    }
+    cfg
+}
+
+/// 步进某档频率上限（MHz），保持非递增并满足 0/1 档 boost 下限。
+fn step_cap(mut cfg: ThermalConfig, index: usize, delta_mhz: i32, base_mhz: i32) -> ThermalConfig {
+    let to_mhz = |khz: i32| khz / 1000;
+    let value = (to_mhz(match index {
+        0 => cfg.cap0,
+        1 => cfg.cap1,
+        2 => cfg.cap2,
+        _ => cfg.cap3,
+    }) + delta_mhz)
+        .clamp(800, 5000);
+    match index {
+        0 => {
+            let lo = to_mhz(cfg.cap1).max(base_mhz);
+            cfg.cap0 = value.max(lo) * 1000;
+        }
+        1 => {
+            let lo = to_mhz(cfg.cap2).max(base_mhz);
+            let hi = to_mhz(cfg.cap0).min(5000);
+            cfg.cap1 = value.max(lo).min(hi) * 1000;
+        }
+        2 => {
+            let lo = to_mhz(cfg.cap3).max(800);
+            let hi = to_mhz(cfg.cap1);
+            cfg.cap2 = value.max(lo).min(hi) * 1000;
+        }
+        _ => {
+            let hi = to_mhz(cfg.cap2);
+            cfg.cap3 = value.max(800).min(hi) * 1000;
+        }
+    }
+    cfg
 }

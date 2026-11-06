@@ -218,6 +218,8 @@ pub(crate) struct AppState {
     pub(crate) close_to_tray: bool,
     /// 是否发送温控换档/高温桌面通知。
     pub(crate) thermal_notify: bool,
+    /// 温控档位规则的编辑草稿；None 表示跟随生效参数。
+    pub(crate) rules_edit: Option<crate::thermal_config::ThermalConfig>,
     /// 上次应用的曲线预设，用于高亮当前预设。
     pub(crate) fan_preset: Option<String>,
     /// 上次看到的温控档位；用于换档通知。
@@ -261,6 +263,7 @@ impl AppState {
             color: (255, 255, 255),
             message: String::new(),
             message_ok: true,
+            rules_edit: None,
             details: details::Details::read(),
             cpu_history: VecDeque::new(),
             gpu_history: VecDeque::new(),

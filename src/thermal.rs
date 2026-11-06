@@ -6,7 +6,8 @@
 //! - 写入后读回校验，错误通过 `thermalStatus` 返回；
 //! - 启用状态持久化到 `/var/lib/ecpilot/thermal-enabled`；
 //! - helper 收到 SIGTERM / 线程 panic 时落安全档；
-//! - 阈值和 caps 可由 `MCC_THERMAL_*` 环境变量覆盖。
+//! - 阈值和 caps 可由 `MCC_THERMAL_*` 环境变量覆盖，再由
+//!   `/var/lib/ecpilot/thermal-rules.json` 的档位规则覆盖（GUI 编辑）。
 
 use std::fs;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -18,70 +19,59 @@ use std::time::{Duration, Instant};
 const CPUFREQ: &str = "/sys/devices/system/cpu/cpufreq";
 const ENABLED_PATH: &str = "/var/lib/ecpilot/thermal-enabled";
 const LEGACY_ENABLED_PATH: &str = "/var/lib/mcontrolcenter-gpui/thermal-enabled";
-const MANUAL_PATH: &str = "/var/lib/ecpilot/thermal-manual";
-const CAP_PATH: &str = "/var/lib/ecpilot/thermal-cap-khz";
-const BOOST_PATH: &str = "/var/lib/ecpilot/thermal-boost";
-const LEVEL_PATH: &str = "/var/lib/ecpilot/thermal-level";
+const RULES_PATH: &str = "/var/lib/ecpilot/thermal-rules.json";
 const MIN_CAP_KHZ: i32 = 800_000;
 
 use crate::thermal_config::ThermalConfig;
 
-/// 手动模式的目标值；整体加锁，避免 worker 读到半更新的组合。
-#[derive(Clone, Copy)]
-struct ManualState {
-    level: i32,
-    cap: i32,
-    boost: bool,
+/// GUI 保存的档位规则覆盖；未提供的字段沿用环境/默认值。
+#[derive(Debug, Default, serde::Deserialize)]
+struct ThermalRules {
+    up1: Option<i32>,
+    up2: Option<i32>,
+    up3: Option<i32>,
+    cap0: Option<i32>,
+    cap1: Option<i32>,
+    cap2: Option<i32>,
+    cap3: Option<i32>,
 }
 
 /// helper 与后台线程共享的温控状态。
 pub struct ThermalGuard {
-    config: ThermalConfig,
+    /// 生效参数；`set_rules` 时原地更新，worker 每轮读取。
+    config: Mutex<ThermalConfig>,
     enabled: AtomicBool,
     level: AtomicI32,
     cap_khz: AtomicI32,
     temp: AtomicI32,
     boost: AtomicBool,
-    manual: AtomicBool,
-    manual_state: Mutex<ManualState>,
-    manual_dirty: AtomicBool,
     restart: AtomicBool,
     no_boost: bool,
     error: Mutex<Option<String>>,
 }
 
 impl ThermalGuard {
-    /// 启动温控线程；启用状态从磁盘恢复。
+    /// 启动温控线程；启用状态与档位规则从磁盘恢复。
     pub fn start() -> Arc<Self> {
-        let config = ThermalConfig::from_env();
+        cleanup_manual_files();
+        let mut config = ThermalConfig::from_env();
+        if let Some(rules) = load_rules() {
+            apply_rules(&mut config, &rules);
+        }
         let enabled = load_enabled();
         let no_boost = last_boot_thermal_trip();
-        let manual = load_bool(MANUAL_PATH, false);
-        let manual_level = load_i32(LEVEL_PATH, 0).clamp(-1, 3);
-        let manual_cap =
-            load_i32(CAP_PATH, config.cap0).clamp(MIN_CAP_KHZ, max_cap_khz());
-        let manual_boost = load_bool(BOOST_PATH, true) && !no_boost;
-        let level = if manual { manual_level } else { 0 };
-        let cap = if enabled {
-            if manual { manual_cap } else { config.cap0 }
+        let (level, cap, boost) = if enabled {
+            (0, config.cap0, !no_boost)
         } else {
-            config.base_khz
+            (0, config.base_khz, false)
         };
-        let boost = enabled && if manual { manual_boost } else { !no_boost };
         let guard = Arc::new(Self {
-            config,
+            config: Mutex::new(config),
             enabled: AtomicBool::new(enabled),
             level: AtomicI32::new(level),
             cap_khz: AtomicI32::new(cap),
             temp: AtomicI32::new(0),
             boost: AtomicBool::new(boost),
-            manual: AtomicBool::new(manual),
-            manual_state: Mutex::new(ManualState {
-                level: manual_level,
-                cap: manual_cap,
-                boost: manual_boost,
-            }),
-            manual_dirty: AtomicBool::new(false),
             restart: AtomicBool::new(false),
             no_boost,
             error: Mutex::new(None),
@@ -116,14 +106,14 @@ impl ThermalGuard {
         )
     }
 
-    /// 参数 JSON，供 GUI 显示实际阈值。
-    pub fn config_json(&self) -> String {
-        serde_json::to_string(&self.config).unwrap_or_default()
+    /// 生效参数快照。
+    pub fn config(&self) -> ThermalConfig {
+        self.config.lock().map(|config| *config).unwrap_or_default()
     }
 
-    /// 是否处于手动模式。
-    pub fn manual(&self) -> bool {
-        self.manual.load(Ordering::SeqCst)
+    /// 参数 JSON，供 GUI 显示实际阈值。
+    pub fn config_json(&self) -> String {
+        serde_json::to_string(&self.config()).unwrap_or_default()
     }
 
     /// 启用/停用并持久化；停用时线程落安全档。
@@ -132,71 +122,47 @@ impl ThermalGuard {
         write_state(ENABLED_PATH, if on { "1" } else { "0" })?;
         self.enabled.store(on, Ordering::Relaxed);
         if on {
-            self.manual_dirty.store(true, Ordering::SeqCst);
-        }
-        Ok(())
-    }
-
-    /// 切换自动/手动模式并持久化。
-    pub fn set_manual(&self, manual: bool) -> Result<(), String> {
-        write_state(MANUAL_PATH, if manual { "1" } else { "0" })?;
-        self.manual.store(manual, Ordering::SeqCst);
-        if manual {
-            self.manual_dirty.store(true, Ordering::SeqCst);
-        } else {
             self.restart.store(true, Ordering::Relaxed);
         }
         Ok(())
     }
 
-    /// 手动选择 0..=3 档，使用该档的配置频率与 boost 策略。
-    pub fn set_level(&self, level: i32) -> Result<(), String> {
-        if !(0..=3).contains(&level) {
-            return Err("thermal level must be 0..=3".into());
+    /// 保存档位规则覆盖并立即生效；空或 `{}` 清除覆盖。
+    pub fn set_rules(&self, json: &str) -> Result<(), String> {
+        let trimmed = json.trim();
+        if trimmed.is_empty() || trimmed == "{}" {
+            let _ = fs::remove_file(RULES_PATH);
+            if let Ok(mut slot) = self.config.lock() {
+                *slot = ThermalConfig::from_env();
+            }
+            self.restart.store(true, Ordering::Relaxed);
+            return Ok(());
         }
-        let (cap, boost) = level_target(&self.config, level, self.no_boost);
-        self.store_manual(level, cap, boost)
-    }
-
-    /// 手动设置频率上限（kHz）与 boost。
-    pub fn set_frequency(&self, cap_khz: i32, boost: bool) -> Result<(), String> {
-        if boost && self.no_boost {
-            return Err("boost is disabled after a thermal trip".into());
+        let rules: ThermalRules = serde_json::from_str(trimmed)
+            .map_err(|error| format!("invalid thermal rules: {error}"))?;
+        let mut config = self.config();
+        apply_rules(&mut config, &rules);
+        validate_config(&config)?;
+        write_state(RULES_PATH, trimmed)?;
+        if let Ok(mut slot) = self.config.lock() {
+            *slot = config;
         }
-        let mut cap = cap_khz.clamp(MIN_CAP_KHZ, max_cap_khz());
-        // 关闭 boost 时内核只能到基础频率；把上限钳到基础频率，
-        // 避免写入后被内核拒绝。提高上限时由 GUI 自动开启 boost。
-        if !boost && cap > self.config.base_khz {
-            cap = self.config.base_khz;
-        }
-        self.store_manual(-1, cap, boost)
-    }
-
-    fn store_manual(&self, level: i32, cap: i32, boost: bool) -> Result<(), String> {
-        write_state(MANUAL_PATH, "1")?;
-        write_state(CAP_PATH, &cap.to_string())?;
-        write_state(BOOST_PATH, if boost { "1" } else { "0" })?;
-        write_state(LEVEL_PATH, &level.to_string())?;
-        if let Ok(mut state) = self.manual_state.lock() {
-            *state = ManualState { level, cap, boost };
-        }
-        self.manual.store(true, Ordering::SeqCst);
-        self.manual_dirty.store(true, Ordering::SeqCst);
+        self.restart.store(true, Ordering::Relaxed);
         Ok(())
     }
 
-    /// 重新应用参数：自动模式回到 0 档，手动模式重放当前设定。
+    /// 回到 0 档并重新应用参数。
     pub fn restart(&self) {
         self.restart.store(true, Ordering::Relaxed);
-        self.manual_dirty.store(true, Ordering::Relaxed);
     }
 
     /// 停止保护并落安全档；用于 SIGTERM / panic。
     pub fn shutdown_safe(&self) {
         self.enabled.store(false, Ordering::Relaxed);
-        let _ = apply_cap(&self.config, self.config.base_khz, false, &self.error);
+        let config = self.config();
+        let _ = apply_cap(&config, config.base_khz, false, &self.error);
         self.level.store(0, Ordering::Relaxed);
-        self.cap_khz.store(self.config.base_khz, Ordering::Relaxed);
+        self.cap_khz.store(config.base_khz, Ordering::Relaxed);
         self.boost.store(false, Ordering::Relaxed);
     }
 
@@ -207,11 +173,89 @@ impl ThermalGuard {
     }
 }
 
+/// 读取持久化的规则覆盖；文件缺失或损坏时返回 None。
+fn load_rules() -> Option<ThermalRules> {
+    let text = fs::read_to_string(RULES_PATH).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// 把规则覆盖合并进生效参数；触发温度同时派生回落温度（up − 5 °C）。
+fn apply_rules(config: &mut ThermalConfig, rules: &ThermalRules) {
+    if let Some(value) = rules.up1 {
+        config.up1 = value;
+        config.down1 = (value - 5).max(40);
+    }
+    if let Some(value) = rules.up2 {
+        config.up2 = value;
+        config.down2 = (value - 5).max(40);
+    }
+    if let Some(value) = rules.up3 {
+        config.up3 = value;
+        config.down3 = (value - 5).max(40);
+    }
+    if let Some(value) = rules.cap0 {
+        config.cap0 = value;
+    }
+    if let Some(value) = rules.cap1 {
+        config.cap1 = value;
+    }
+    if let Some(value) = rules.cap2 {
+        config.cap2 = value;
+    }
+    if let Some(value) = rules.cap3 {
+        config.cap3 = value;
+    }
+}
+
+/// 校验合并后的参数；档位 0/1 需要 boost，上限不得低于基础频率。
+fn validate_config(config: &ThermalConfig) -> Result<(), String> {
+    for up in [config.up1, config.up2, config.up3] {
+        if !(60..=110).contains(&up) {
+            return Err(format!("trigger temperature {up} out of 60..=110"));
+        }
+    }
+    if !(config.up1 < config.up2 && config.up2 < config.up3) {
+        return Err("trigger temperatures must increase".into());
+    }
+    for (up, down) in [
+        (config.up1, config.down1),
+        (config.up2, config.down2),
+        (config.up3, config.down3),
+    ] {
+        if down >= up {
+            return Err(format!("down {down} must stay below trigger {up}"));
+        }
+    }
+    let max = max_cap_khz();
+    for cap in [config.cap0, config.cap1, config.cap2, config.cap3] {
+        if !(MIN_CAP_KHZ..=max).contains(&cap) {
+            return Err(format!("cap {cap} out of {MIN_CAP_KHZ}..={max}"));
+        }
+    }
+    if !(config.cap0 >= config.cap1 && config.cap1 >= config.cap2 && config.cap2 >= config.cap3) {
+        return Err("caps must not increase with level".into());
+    }
+    if config.cap0 < config.base_khz || config.cap1 < config.base_khz {
+        return Err("level 0/1 run with boost and cannot be below the base frequency".into());
+    }
+    Ok(())
+}
+
+/// 删除旧版手动模式遗留的状态文件。
+fn cleanup_manual_files() {
+    for path in [
+        "/var/lib/ecpilot/thermal-manual",
+        "/var/lib/ecpilot/thermal-cap-khz",
+        "/var/lib/ecpilot/thermal-boost",
+        "/var/lib/ecpilot/thermal-level",
+    ] {
+        let _ = fs::remove_file(path);
+    }
+}
+
 fn run(guard: &ThermalGuard) {
-    let config = &guard.config;
     let mut level = 0i32;
     let mut last_enabled: Option<bool> = None;
-    let mut last_manual: Option<(i32, bool)> = None;
     let mut last_change = Instant::now();
     let mut cool_since: Option<Instant> = None;
     let mut verify_countdown = 0u32;
@@ -224,48 +268,18 @@ fn run(guard: &ThermalGuard) {
                 verify_caps(guard);
             }
         }
+        let config = guard.config();
         if !guard.enabled.load(Ordering::Relaxed) {
             if last_enabled != Some(false) {
-                let _ = apply_cap(config, config.base_khz, false, &guard.error);
+                let _ = apply_cap(&config, config.base_khz, false, &guard.error);
                 guard.level.store(0, Ordering::Relaxed);
                 guard.cap_khz.store(config.base_khz, Ordering::Relaxed);
                 guard.boost.store(false, Ordering::Relaxed);
                 last_enabled = Some(false);
-                last_manual = None;
             }
             std::thread::sleep(Duration::from_millis(config.sample_ms));
             continue;
         }
-
-        if guard.manual.load(Ordering::SeqCst) {
-            let state = guard
-                .manual_state
-                .lock()
-                .map(|state| *state)
-                .unwrap_or(ManualState {
-                    level: -1,
-                    cap: config.base_khz,
-                    boost: false,
-                });
-            let dirty = guard.manual_dirty.swap(false, Ordering::SeqCst);
-            if dirty || last_manual != Some((state.cap, state.boost)) {
-                if state.boost && !guard.boost.load(Ordering::Relaxed) {
-                    let _ = apply_cap(config, config.base_khz, true, &guard.error);
-                }
-                let _ = apply_cap(config, state.cap, state.boost, &guard.error);
-                guard.cap_khz.store(state.cap, Ordering::Relaxed);
-                guard.boost.store(state.boost, Ordering::Relaxed);
-                guard.level.store(state.level, Ordering::Relaxed);
-                last_manual = Some((state.cap, state.boost));
-            }
-            if let Some(temp) = read_temps().map(|temps| temps.0.max(temps.1).max(temps.2)) {
-                guard.temp.store(temp, Ordering::Relaxed);
-            }
-            last_enabled = Some(true);
-            std::thread::sleep(Duration::from_millis(config.sample_ms));
-            continue;
-        }
-        last_manual = None;
 
         if last_enabled != Some(true) || guard.restart.swap(false, Ordering::Relaxed) {
             level = 0;
@@ -284,7 +298,7 @@ fn run(guard: &ThermalGuard) {
                 now,
                 last_change,
                 &mut cool_since,
-                config,
+                &config,
             );
             if next != level {
                 level = next;
@@ -379,18 +393,14 @@ fn latch_ok(
 }
 
 fn apply_level(guard: &ThermalGuard, level: i32) {
-    let (cap, boost) = level_target(&guard.config, level, guard.no_boost);
+    let config = guard.config();
+    let (cap, boost) = level_target(&config, level, guard.no_boost);
     // 从 boost 关闭切到开启时，先以基础频率打开 boost，再提高上限：
     // 否则内核会在 boost 尚未生效时把 scaling_max_freq 钳回基础频率。
     if boost && !guard.boost.load(Ordering::Relaxed) {
-        let _ = apply_cap(
-            &guard.config,
-            guard.config.base_khz,
-            true,
-            &guard.error,
-        );
+        let _ = apply_cap(&config, config.base_khz, true, &guard.error);
     }
-    if apply_cap(&guard.config, cap, boost, &guard.error).is_err() {
+    if apply_cap(&config, cap, boost, &guard.error).is_err() {
         // 错误已写入 guard.error；继续保留意图值供 UI 展示。
     }
     guard.level.store(level, Ordering::Relaxed);
@@ -592,19 +602,6 @@ fn write_state(path: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn load_bool(path: &str, default: bool) -> bool {
-    fs::read_to_string(path)
-        .map(|value| value.trim() != "0")
-        .unwrap_or(default)
-}
-
-fn load_i32(path: &str, default: i32) -> i32 {
-    fs::read_to_string(path)
-        .ok()
-        .and_then(|value| value.trim().parse().ok())
-        .unwrap_or(default)
-}
-
 fn max_cap_khz() -> i32 {
     // amd-pstate 的 cpuinfo_max_freq 会随 boost 开关变化；优先读取静态
     // 硬件上限，避免 boost 关闭时把用户请求的高频误钳到基础频率。
@@ -683,7 +680,7 @@ mod tests {
     }
 
     #[test]
-    fn manual_levels_map_to_configured_caps() {
+    fn levels_map_to_configured_caps() {
         let cfg = config();
         assert_eq!(level_target(&cfg, 0, false), (cfg.cap0, true));
         assert_eq!(level_target(&cfg, 1, false), (cfg.cap1, true));
@@ -707,5 +704,54 @@ mod tests {
             std::env::remove_var("MCC_THERMAL_UP1");
             std::env::remove_var("MCC_THERMAL_SAMPLE_MS");
         }
+    }
+
+    #[test]
+    fn rules_override_trigger_and_cap_and_derive_down() {
+        let mut cfg = ThermalConfig::default();
+        apply_rules(
+            &mut cfg,
+            &ThermalRules {
+                up1: Some(80),
+                up2: Some(88),
+                up3: Some(100),
+                cap0: Some(4_000_000),
+                ..Default::default()
+            },
+        );
+        assert_eq!(cfg.up1, 80);
+        assert_eq!(cfg.down1, 75);
+        assert_eq!(cfg.down2, 83);
+        assert_eq!(cfg.down3, 95);
+        assert_eq!(cfg.cap0, 4_000_000);
+        assert_eq!(cfg.cap1, 3_800_000);
+        assert!(validate_config(&cfg).is_ok());
+    }
+
+    #[test]
+    fn partial_trigger_rules_stay_valid() {
+        let mut cfg = ThermalConfig::default();
+        apply_rules(
+            &mut cfg,
+            &ThermalRules {
+                up2: Some(95),
+                up3: Some(96),
+                ..Default::default()
+            },
+        );
+        assert!(validate_config(&cfg).is_ok(), "partial rules should stay valid");
+    }
+
+    #[test]
+    fn rules_validation_rejects_bad_values() {
+        let mut cfg = ThermalConfig::default();
+        apply_rules(&mut cfg, &ThermalRules { up2: Some(90), ..Default::default() });
+        assert!(validate_config(&cfg).is_err()); // up1 == up2
+        let mut cfg = ThermalConfig::default();
+        apply_rules(&mut cfg, &ThermalRules { cap1: Some(5_900_000), ..Default::default() });
+        assert!(validate_config(&cfg).is_err()); // 超出硬件上限
+        let mut cfg = ThermalConfig::default();
+        apply_rules(&mut cfg, &ThermalRules { cap2: Some(5_000_000), ..Default::default() });
+        assert!(validate_config(&cfg).is_err()); // cap2 > cap1，档位不降频
     }
 }

@@ -10,6 +10,7 @@ use crate::config::{
     save_fan_preset, save_shift_mode, save_thermal_notify,
 };
 use crate::ec;
+use crate::thermal_config::ThermalConfig;
 use crate::theme::{RADIUS_CONTROL, ThemeMode};
 
 mod fan;
