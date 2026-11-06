@@ -238,6 +238,9 @@ fn validate_config(config: &ThermalConfig) -> Result<(), String> {
     if config.cap0 < config.base_khz || config.cap1 < config.base_khz {
         return Err("level 0/1 run with boost and cannot be below the base frequency".into());
     }
+    if config.cap2 > config.base_khz || config.cap3 > config.base_khz {
+        return Err("levels 2/3 run without boost and cannot exceed the base frequency".into());
+    }
     Ok(())
 }
 
@@ -753,5 +756,8 @@ mod tests {
         let mut cfg = ThermalConfig::default();
         apply_rules(&mut cfg, &ThermalRules { cap2: Some(5_000_000), ..Default::default() });
         assert!(validate_config(&cfg).is_err()); // cap2 > cap1，档位不降频
+        let mut cfg = ThermalConfig::default();
+        apply_rules(&mut cfg, &ThermalRules { cap2: Some(3_000_000), ..Default::default() });
+        assert!(validate_config(&cfg).is_err()); // 降档 2 关 boost，不得超过基础频率
     }
 }

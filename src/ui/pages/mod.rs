@@ -35,7 +35,7 @@ impl AppState {
             Page::Thermal => self.thermal(cx).into_any_element(),
             Page::Settings => self.settings(cx).into_any_element(),
         };
-        let toast: AnyElement = if self.message.is_empty() {
+        let toast: AnyElement = if !self.toast_visible() {
             div().into_any_element()
         } else {
             div()

@@ -196,6 +196,8 @@ pub(crate) struct AppState {
     pub(crate) message: String,
     /// 提示是否为成功。
     pub(crate) message_ok: bool,
+    /// 最近一次操作结果的记录时间；用于成功提示的自动隐藏。
+    pub(crate) message_at: Option<Instant>,
     /// 系统详情。
     pub(crate) details: details::Details,
     /// CPU 使用率历史。
@@ -263,6 +265,7 @@ impl AppState {
             color: (255, 255, 255),
             message: String::new(),
             message_ok: true,
+            message_at: None,
             rules_edit: None,
             details: details::Details::read(),
             cpu_history: VecDeque::new(),
@@ -556,7 +559,20 @@ impl AppState {
         };
         self.message = message;
         self.message_ok = ok;
+        self.message_at = Some(Instant::now());
         cx.notify();
+    }
+
+    /// 成功提示显示 4 秒后隐藏；失败提示保留到下一次操作。
+    pub(crate) fn toast_visible(&self) -> bool {
+        if self.message.is_empty() {
+            return false;
+        }
+        if self.message_ok {
+            self.message_at.is_some_and(|at| at.elapsed() < Duration::from_secs(4))
+        } else {
+            true
+        }
     }
 
 

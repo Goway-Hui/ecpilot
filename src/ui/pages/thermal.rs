@@ -280,10 +280,11 @@ impl AppState {
         let theme = self.theme();
         let base_mhz = self.status.thermal_config.base_khz / 1000;
 
+        let cfg = self.rules_edit.unwrap_or(self.status.thermal_config);
         let triggers = [
-            ("thermal-trig1", 0usize, self.t("降档 1 触发", "Level 1 at"), self.rules_edit.unwrap_or(self.status.thermal_config).up1),
-            ("thermal-trig2", 1, self.t("降档 2 触发", "Level 2 at"), self.rules_edit.unwrap_or(self.status.thermal_config).up2),
-            ("thermal-trig3", 2, self.t("紧急触发", "Emergency at"), self.rules_edit.unwrap_or(self.status.thermal_config).up3),
+            ("thermal-trig1-down", "thermal-trig1-up", 0usize, self.t("降档 1 触发", "Level 1 at"), cfg.up1),
+            ("thermal-trig2-down", "thermal-trig2-up", 1, self.t("降档 2 触发", "Level 2 at"), cfg.up2),
+            ("thermal-trig3-down", "thermal-trig3-up", 2, self.t("紧急触发", "Emergency at"), cfg.up3),
         ];
         let mut trigger_col = div()
             .flex_1()
@@ -301,7 +302,7 @@ impl AppState {
                         "down = trigger − 5 °C",
                     ))),
             );
-        for (id, index, label, temp) in triggers {
+        for (id_down, id_up, index, label, temp) in triggers {
             let step_down = move |this: &mut AppState, cx: &mut Context<AppState>| {
                 let draft = this.rules_edit.unwrap_or(this.status.thermal_config);
                 let draft = step_trigger(draft, index, -1);
@@ -338,18 +339,20 @@ impl AppState {
                                     .child(format!("{temp} °C")),
                             )
                             .child(
-                                self.action_button(id, "− 1 °C".into(), false, cx, step_down),
+                                self.action_button(id_down, "− 1 °C".into(), false, cx, step_down),
                             )
-                            .child(self.action_button(id, "+ 1 °C".into(), false, cx, step_up)),
+                            .child(
+                                self.action_button(id_up, "+ 1 °C".into(), false, cx, step_up),
+                            ),
                     ),
             );
         }
 
         let caps = [
-            ("thermal-cap0", 0usize, self.t("正常", "Normal"), cfg_cap(self, 0), true),
-            ("thermal-cap1", 1, self.t("降档 1", "Level 1"), cfg_cap(self, 1), true),
-            ("thermal-cap2", 2, self.t("降档 2", "Level 2"), cfg_cap(self, 2), false),
-            ("thermal-cap3", 3, self.t("紧急锁存", "Emergency"), cfg_cap(self, 3), false),
+            ("thermal-cap0-down", "thermal-cap0-up", 0usize, self.t("正常", "Normal"), cfg_cap(self, 0)),
+            ("thermal-cap1-down", "thermal-cap1-up", 1, self.t("降档 1", "Level 1"), cfg_cap(self, 1)),
+            ("thermal-cap2-down", "thermal-cap2-up", 2, self.t("降档 2", "Level 2"), cfg_cap(self, 2)),
+            ("thermal-cap3-down", "thermal-cap3-up", 3, self.t("紧急锁存", "Emergency"), cfg_cap(self, 3)),
         ];
         let mut cap_col = div()
             .flex_1()
@@ -371,7 +374,7 @@ impl AppState {
                         base_mhz as f32 / 1000.0
                     ))),
             );
-        for (id, index, label, cap_khz, with_boost) in caps {
+        for (id_down, id_up, index, label, cap_khz) in caps {
             let cap_mhz = cap_khz / 1000;
             let step_down = move |this: &mut AppState, cx: &mut Context<AppState>| {
                 let base = this.status.thermal_config.base_khz / 1000;
@@ -411,12 +414,25 @@ impl AppState {
                                     .child(format!("{:.1} GHz", cap_mhz as f32 / 1000.0)),
                             )
                             .child(
-                                self.action_button(id, "− 100 MHz".into(), false, cx, step_down),
+                                self.action_button(
+                                    id_down,
+                                    "− 100 MHz".into(),
+                                    false,
+                                    cx,
+                                    step_down,
+                                ),
                             )
-                            .child(self.action_button(id, "+ 100 MHz".into(), false, cx, step_up)),
+                            .child(
+                                self.action_button(
+                                    id_up,
+                                    "+ 100 MHz".into(),
+                                    false,
+                                    cx,
+                                    step_up,
+                                ),
+                            ),
                     ),
             );
-            let _ = with_boost;
         }
 
         let reset = self.action_button(
@@ -520,11 +536,11 @@ fn step_cap(mut cfg: ThermalConfig, index: usize, delta_mhz: i32, base_mhz: i32)
         }
         2 => {
             let lo = to_mhz(cfg.cap3).max(800);
-            let hi = to_mhz(cfg.cap1);
+            let hi = to_mhz(cfg.cap1).min(base_mhz);
             cfg.cap2 = value.max(lo).min(hi) * 1000;
         }
         _ => {
-            let hi = to_mhz(cfg.cap2);
+            let hi = to_mhz(cfg.cap2).min(base_mhz);
             cfg.cap3 = value.max(800).min(hi) * 1000;
         }
     }
