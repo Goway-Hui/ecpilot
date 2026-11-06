@@ -177,7 +177,7 @@ fn main() {
         .run(move |cx: &mut App| {
             crate::app::spawn_tray_polling(cx, tray_rx, std::sync::Arc::clone(&windows));
             let window_global = std::sync::Arc::clone(&windows);
-            let bounds = Bounds::centered(None, size(px(1180.0), px(980.0)), cx);
+            let bounds = Bounds::centered(None, size(px(1200.0), px(900.0)), cx);
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -186,6 +186,7 @@ fn main() {
                     ..Default::default()
                 }),
                 app_id: Some("ecpilot".into()),
+                window_min_size: Some(size(px(960.0), px(640.0))),
                 ..Default::default()
             },
             move |window, cx| {

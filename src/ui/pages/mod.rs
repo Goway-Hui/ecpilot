@@ -2,12 +2,15 @@
 //!
 //! 每个页面一个子模块，共享 `ui` 的通用控件与主题。
 
-use gpui::{AnyElement, Context, Div, IntoElement, div, prelude::*, px, rgb};
+use gpui::{AnyElement, Context, Div, div, prelude::*, px, rgb};
 
 use crate::app::{AppState, Page};
-use crate::config::{save_close_to_tray, save_config, save_custom, save_fan_mode, save_fan_preset, save_shift_mode, CurveTarget, CustomCurve, Lang};
+use crate::config::{
+    CurveTarget, CustomCurve, Lang, save_close_to_tray, save_config, save_custom, save_fan_mode,
+    save_fan_preset, save_shift_mode,
+};
 use crate::ec;
-use crate::theme::ThemeMode;
+use crate::theme::{RADIUS_CONTROL, ThemeMode};
 
 mod fan;
 mod gpu;
@@ -35,9 +38,9 @@ impl AppState {
             div().into_any_element()
         } else {
             div()
-                .px_3()
-                .py_2()
-                .rounded_md()
+                .px(px(12.0))
+                .py(px(8.0))
+                .rounded(px(RADIUS_CONTROL))
                 .bg(rgb(if self.message_ok {
                     self.theme().success_bg
                 } else {
@@ -48,7 +51,7 @@ impl AppState {
                 } else {
                     self.theme().error_text
                 }))
-                .text_size(px(12.0))
+                .text_size(px(12.5))
                 .child(self.message.clone())
                 .into_any_element()
         };
@@ -56,13 +59,28 @@ impl AppState {
         div()
             .flex_1()
             .h_full()
-            .p_6()
+            .min_w(px(0.0))
+            .min_h(px(0.0))
             .flex()
             .flex_col()
-            .gap_4()
-            .child(self.header())
-            .child(page)
-            .child(div().flex_1())
-            .child(toast)
+            .child(div().w_full().min_w(px(0.0)).px(px(28.0)).pt(px(24.0)).pb(px(10.0)).child(self.header()))
+            .child(
+                div()
+                    .id("page-scroll")
+                    .flex_1()
+                    .w_full()
+                    .min_w(px(0.0))
+                    .min_h(px(0.0))
+                    .overflow_y_scroll()
+                    .track_scroll(&self.page_scroll)
+                    .px(px(28.0))
+                    .pt(px(10.0))
+                    .pb(px(24.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(16.0))
+                    .child(div().w_full().min_w(px(0.0)).child(page))
+                    .child(toast),
+            )
     }
 }

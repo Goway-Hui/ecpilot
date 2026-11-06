@@ -35,7 +35,7 @@ impl Details {
             wm: window_manager(),
             shell: shell_name(),
             term: terminal_name(),
-            font: "系统默认".to_string(),
+            font: crate::theme::FONT_FAMILY.to_string(),
             pc: pc_name(),
             cpu: cpu_summary(),
             mem: String::new(),

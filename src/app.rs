@@ -9,13 +9,13 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    div, prelude::*, px, rgb, AnyWindowHandle, App, Bounds, Context, IntoElement, Render, Window,
-    WindowBounds, WindowOptions, size,
+    div, prelude::*, px, rgb, AnyWindowHandle, App, Bounds, Context, IntoElement, Render,
+    ScrollHandle, Window, WindowBounds, WindowOptions, size,
 };
 
 use crate::config::{load_close_to_tray, load_config, load_custom, load_fan_settings, CurveTarget, CustomCurve, Lang};
 use crate::{details, ec, klc};
-use crate::theme::{Theme, ThemeMode, DARK, LIGHT};
+use crate::theme::{FONT_FAMILY, Theme, ThemeMode, DARK, LIGHT};
 use crate::tray::TrayCommand;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -110,9 +110,10 @@ fn show_or_open(cx: &mut App, windows: &TrayWindows) {
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
-            size(px(1180.0), px(980.0)),
+            size(px(1200.0), px(900.0)),
             cx,
         ))),
+        window_min_size: Some(size(px(960.0), px(640.0))),
         ..Default::default()
     };
     let closure_windows = Arc::clone(windows);
@@ -209,6 +210,10 @@ pub(crate) struct AppState {
     pub(crate) focus: gpui::FocusHandle,
     /// 窗口是否获得焦点。
     pub(crate) focused: bool,
+    /// 窗口较窄时改用 2 列布局。
+    pub(crate) compact: bool,
+    /// 页面滚动位置。
+    pub(crate) page_scroll: ScrollHandle,
     /// 关闭窗口时是否最小化到托盘。
     pub(crate) close_to_tray: bool,
     /// 上次应用的曲线预设，用于高亮当前预设。
@@ -261,6 +266,8 @@ impl AppState {
             battery_history: VecDeque::new(),
             focus: cx.focus_handle(),
             focused: false,
+            compact: false,
+            page_scroll: ScrollHandle::new(),
             close_to_tray: load_close_to_tray(),
             fan_preset: saved_fan_preset.clone(),
             thermal_level_seen: None,
@@ -511,6 +518,13 @@ impl AppState {
         .detach();
     }
 
+    /// 切换页面并回到顶部。
+    pub(crate) fn set_page(&mut self, page: Page) {
+        self.page = page;
+        self.page_scroll
+            .set_offset(gpui::point(px(0.0), px(0.0)));
+    }
+
     /// 返回当前主题配色。
     pub(crate) fn theme(&self) -> Theme {
         match self.theme_mode {
@@ -553,6 +567,7 @@ impl Render for AppState {
             cx.focus_self(window);
             self.focused = true;
         }
+        self.compact = window.viewport_size().width < px(1100.0);
         div()
             .flex()
             .flex_row()
@@ -570,13 +585,14 @@ impl Render for AppState {
                     _ => None,
                 };
                 if let Some(page) = page {
-                    this.page = page;
+                    this.set_page(page);
                     cx.notify();
                 }
             }))
             .bg(rgb(self.theme().bg))
             .text_color(rgb(self.theme().text))
-            .text_size(px(14.0))
+            .font_family(FONT_FAMILY)
+            .text_size(px(13.0))
             .child(self.sidebar(cx))
             .child(self.content(cx))
     }

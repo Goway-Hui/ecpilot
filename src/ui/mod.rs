@@ -1,168 +1,178 @@
 //! 通用 UI 控件与左侧导航。
 //!
 //! 页面布局在 `pages` 子模块；本模块提供卡片、按钮、图表等可复用组件。
+//! 设计约束：一个间距节奏、一套字号、一个圆角族、一个强调色。
 
 use std::collections::VecDeque;
 
 use gpui::{
     Bounds, Context, Div, IntoElement, PathBuilder, SharedString, canvas, div, point, prelude::*,
-    px, quad, rgb, size, transparent_black,
+    px, quad, relative, rgb, size, transparent_black,
 };
 
 use crate::app::{AppState, Page};
 use crate::config::{save_custom, CurveTarget};
+use crate::theme::{RADIUS_CARD, RADIUS_CONTROL};
 
 mod pages;
+
+/// 常用字号（桌面端密度，正文不小于 13px）。
+const T_LABEL: f32 = 12.5;
+const T_BODY: f32 = 13.0;
+const T_VALUE: f32 = 34.0;
 
 impl AppState {
     /// 通用卡片容器（背景、圆角、边框）。
     pub(crate) fn card(&self) -> Div {
+        let theme = self.theme();
         div()
-            .p_4()
-            .rounded_lg()
-            .bg(rgb(self.theme().card))
+            .min_w(px(0.0))
+            .p(px(20.0))
+            .rounded(px(RADIUS_CARD))
+            .bg(rgb(theme.card))
             .border_1()
-            .border_color(rgb(self.theme().border))
+            .border_color(rgb(theme.border))
     }
 
-    /// 分组标题。
+    /// 卡片/分组标题。
     pub(crate) fn section(&self, zh: &str, en: &str) -> Div {
         div()
-            .px_3()
-            .pt_3()
-            .pb_1()
-            .text_size(px(11.0))
-            .text_color(rgb(self.theme().muted))
+            .px(px(10.0))
+            .pt(px(14.0))
+            .pb(px(6.0))
+            .text_size(px(12.0))
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .text_color(rgb(self.theme().faint))
             .child(self.t(zh, en))
     }
 
-    /// 小型柱状趋势图。
-    pub(crate) fn sparkline(&self, history: &VecDeque<f32>, color: u32, columns: usize, rows: usize) -> Div {
-        let theme = self.theme();
-        let mut chart = div()
-            .flex()
-            .items_end()
-            .gap(px(2.0))
-            .h(px((rows as f32) * 7.0));
-        let len = history.len();
-        for i in 0..columns {
-            let index = len.saturating_sub(columns) + i;
-            let value = history
-                .get(index)
-                .copied()
-                .unwrap_or(0.0)
-                .clamp(0.0, 100.0);
-            let filled = ((value / 100.0) * rows as f32).ceil() as usize;
-            let mut column = div().flex().flex_col().gap(px(2.0));
-            for row in 0..rows {
-                let on = row >= rows - filled;
-                column = column.child(
-                    div()
-                        .size(px(5.0))
-                        .rounded_md()
-                        .bg(rgb(if on { color } else { theme.border })),
-                );
-            }
-            chart = chart.child(column);
-        }
-        chart
+    /// 页内分组标题（与卡片左边缘对齐）。
+    pub(crate) fn page_section(&self, zh: &str, en: &str) -> Div {
+        div()
+            .pt(px(6.0))
+            .pb(px(2.0))
+            .text_size(px(12.5))
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .text_color(rgb(self.theme().faint))
+            .child(self.t(zh, en))
     }
 
-    #[allow(clippy::too_many_arguments)]
-    /// 概览页的统计卡片（数值 + 趋势）。
-    pub(crate) fn stat_card(
-        &self,
-        icon: &'static str,
-        title: String,
-        value: String,
-        unit: String,
-        sub: String,
-        color: u32,
-        history: &VecDeque<f32>,
-    ) -> Div {
-        let theme = self.theme();
-        self.card()
-            .flex_1()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .size(px(28.0))
-                            .rounded_md()
-                            .bg(rgb(theme.card_hover))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_color(rgb(color))
-                            .child(icon),
-                    )
-                    .child(
-                        div()
-                            .text_color(rgb(color))
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .child(title),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_end()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_size(px(32.0))
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .child(value),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(rgb(theme.muted))
-                            .child(unit),
-                    ),
-            )
-            .child(self.label(sub))
-            .child(self.sparkline(history, color, 30, 5))
+    /// 卡片内的小标题。
+    pub(crate) fn card_title(&self, zh: &str, en: &str) -> Div {
+        div()
+            .text_size(px(T_LABEL))
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .text_color(rgb(self.theme().muted))
+            .child(self.t(zh, en))
     }
 
     /// 普通文本标签。
     pub(crate) fn label(&self, text: String) -> Div {
         div()
-            .text_size(px(12.0))
+            .text_size(px(T_BODY))
+            .line_height(px(19.0))
+            .whitespace_normal()
             .text_color(rgb(self.theme().muted))
             .child(text)
     }
 
+    /// 更弱的说明文字。
+    pub(crate) fn hint(&self, text: String) -> Div {
+        div()
+            .text_size(px(12.0))
+            .line_height(px(17.0))
+            .whitespace_normal()
+            .text_color(rgb(self.theme().faint))
+            .child(text)
+    }
+
+    /// 系统详情中的一行。
+    pub(crate) fn info_line(&self, label: &str, value: String) -> Div {
+        let theme = self.theme();
+        div()
+            .flex()
+            .gap(px(10.0))
+            .py(px(2.0))
+            .child(
+                div()
+                    .w(px(64.0))
+                    .text_size(px(T_LABEL))
+                    .text_color(rgb(theme.faint))
+                    .child(label.to_string()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .whitespace_normal()
+                    .text_size(px(T_BODY))
+                    .text_color(rgb(theme.text))
+                    .child(value),
+            )
+    }
+
+    /// 模式/状态卡中的一行（左右分布）。
+    pub(crate) fn info_row(&self, label: &str, value: String, color: u32) -> Div {
+        let theme = self.theme();
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .py(px(5.0))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .whitespace_normal()
+                    .text_size(px(T_BODY))
+                    .text_color(rgb(theme.muted))
+                    .child(label.to_string()),
+            )
+            .child(
+                div()
+                    .flex()
+                    .min_w(px(0.0))
+                    .items_center()
+                    .gap(px(7.0))
+                    .child(div().size(px(6.0)).rounded_full().bg(rgb(color)))
+                    .child(
+                        div()
+                            .min_w(px(0.0))
+                            .whitespace_normal()
+                            .text_size(px(T_BODY))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(rgb(theme.text))
+                            .child(value),
+                    ),
+            )
+    }
+
     /// 带单位和颜色的数值展示。
     pub(crate) fn metric(&self, label: String, value: String, unit: String, color: u32) -> Div {
+        let theme = self.theme();
         self.card()
             .flex()
             .flex_col()
-            .gap_1()
+            .gap(px(6.0))
             .flex_1()
             .child(self.label(label))
             .child(
                 div()
                     .flex()
-                    .items_center()
-                    .gap_1()
+                    .items_end()
+                    .gap(px(4.0))
                     .child(
                         div()
                             .text_size(px(30.0))
-                            .font_weight(gpui::FontWeight::BOLD)
+                            .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(rgb(color))
                             .child(value),
                     )
                     .child(
                         div()
+                            .pb(px(4.0))
                             .text_size(px(12.0))
-                            .text_color(rgb(self.theme().muted))
+                            .text_color(rgb(theme.muted))
                             .child(unit),
                     ),
             )
@@ -171,30 +181,200 @@ impl AppState {
     /// 小徽章/状态标签。
     pub(crate) fn badge(&self, text: String, color: u32) -> Div {
         div()
-            .px_2()
-            .py_1()
-            .rounded_md()
+            .px(px(8.0))
+            .py(px(3.0))
+            .rounded(px(6.0))
             .bg(rgb(self.theme().card_hover))
-            .text_size(px(11.0))
+            .text_size(px(12.0))
+            .font_weight(gpui::FontWeight::MEDIUM)
             .text_color(rgb(color))
             .child(text)
     }
 
     /// 进度条。
     pub(crate) fn progress(&self, percent: f32, color: u32) -> Div {
-        let width = (percent.clamp(0.0, 100.0) / 100.0) * 220.0;
+        let width = percent.clamp(0.0, 100.0) / 100.0;
         div()
-            .h(px(7.0))
+            .h(px(6.0))
             .w_full()
             .rounded_full()
             .bg(rgb(self.theme().card_hover))
             .child(
                 div()
                     .h_full()
-                    .w(px(width.max(3.0)))
+                    .w(relative(width.max(0.02)))
                     .rounded_full()
                     .bg(rgb(color)),
             )
+    }
+
+    /// 顶部状态栏里的一个点+文字。
+    pub(crate) fn status_item(&self, value: String, color: u32) -> Div {
+        let theme = self.theme();
+        div()
+            .flex()
+            .items_center()
+            .gap(px(7.0))
+            .child(div().size(px(6.0)).rounded_full().bg(rgb(color)))
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(rgb(theme.muted))
+                    .child(value),
+            )
+    }
+
+    /// 一个紧凑的统计卡：标题、数值、副行、趋势线。
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn stat_card(
+        &self,
+        title: String,
+        value: String,
+        unit: String,
+        sub: String,
+        color: u32,
+        history: &VecDeque<f32>,
+        min: f32,
+        max: f32,
+    ) -> Div {
+        let theme = self.theme();
+        self.card()
+            .flex_1()
+            .flex()
+            .flex_col()
+            .gap(px(10.0))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(7.0))
+                    .child(div().size(px(7.0)).rounded_full().bg(rgb(color)))
+                    .child(
+                        div()
+                            .text_size(px(T_LABEL))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(rgb(theme.muted))
+                            .child(title),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_end()
+                    .gap(px(3.0))
+                    .child(
+                        div()
+                            .text_size(px(T_VALUE))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(rgb(theme.text))
+                            .child(value),
+                    )
+                    .child(
+                        div()
+                            .pb(px(6.0))
+                            .text_size(px(12.0))
+                            .text_color(rgb(theme.muted))
+                            .child(unit),
+                    ),
+            )
+            .child(self.hint(sub))
+            .child(self.line_chart(history, color, min, max, 42.0))
+    }
+
+    /// 折线趋势图；无交互，仅表达最近 48 个采样。
+    pub(crate) fn line_chart(
+        &self,
+        history: &VecDeque<f32>,
+        color: u32,
+        min: f32,
+        max: f32,
+        height: f32,
+    ) -> Div {
+        let grid = self.theme().chart_grid;
+        let samples: Vec<f32> = history.iter().copied().collect();
+        let span = (max - min).max(0.001);
+        let chart = canvas(
+            move |_, _, _| {},
+            move |bounds, _, window, _| {
+                let pad = px(2.0);
+                let width = bounds.size.width - pad - pad;
+                let h = bounds.size.height - pad - pad;
+                let y_at = |value: f32| {
+                    bounds.origin.y + pad
+                        + h * (1.0 - ((value - min) / span).clamp(0.0, 1.0))
+                };
+
+                for level in [0.25f32, 0.5, 0.75] {
+                    let y = bounds.origin.y + pad + h * level;
+                    let mut line = PathBuilder::stroke(px(1.0));
+                    line.move_to(point(bounds.origin.x + pad, y));
+                    line.line_to(point(bounds.origin.x + pad + width, y));
+                    if let Ok(path) = line.build() {
+                        window.paint_path(path, rgb(grid));
+                    }
+                }
+
+                let count = samples.len();
+                if count < 2 {
+                    return;
+                }
+                let mut line = PathBuilder::stroke(px(2.0));
+                for (index, &value) in samples.iter().enumerate() {
+                    let x = bounds.origin.x + pad
+                        + width * (index as f32 / (count.saturating_sub(1)) as f32);
+                    let position = point(x, y_at(value));
+                    if index == 0 {
+                        line.move_to(position);
+                    } else {
+                        line.line_to(position);
+                    }
+                }
+                if let Ok(path) = line.build() {
+                    window.paint_path(path, rgb(color));
+                }
+
+                if let Some(&last) = samples.last() {
+                    let x = bounds.origin.x + pad + width;
+                    let y = y_at(last);
+                    let dot = Bounds {
+                        origin: point(x - px(3.0), y - px(3.0)),
+                        size: size(px(6.0), px(6.0)),
+                    };
+                    window.paint_quad(quad(
+                        dot,
+                        px(3.0),
+                        rgb(color),
+                        px(0.0),
+                        transparent_black(),
+                        Default::default(),
+                    ));
+                }
+            },
+        )
+        .size_full();
+
+        div().w_full().h(px(height)).child(chart)
+    }
+
+    /// 4 段档位条。
+    pub(crate) fn level_bar(&self, level: i32, active_color: u32) -> Div {
+        let theme = self.theme();
+        let mut row = div().flex().gap(px(4.0)).w_full();
+        for index in 0..4 {
+            let color = if index <= level {
+                active_color
+            } else {
+                theme.card_hover
+            };
+            row = row.child(
+                div()
+                    .h(px(6.0))
+                    .flex_1()
+                    .rounded_full()
+                    .bg(rgb(color)),
+            );
+        }
+        row
     }
 
     /// 侧栏导航项。
@@ -214,38 +394,51 @@ impl AppState {
             .id(id)
             .flex()
             .items_center()
-            .gap_2()
-            .px_3()
-            .py_2()
-            .rounded_md()
+            .gap(px(10.0))
+            .h(px(38.0))
+            .px(px(10.0))
+            .rounded(px(RADIUS_CONTROL))
             .cursor_pointer()
-            .bg(if active {
-                rgb(theme.accent)
+            .bg(rgb(if active {
+                theme.accent_soft
             } else {
-                rgb(theme.sidebar)
-            })
-            .text_color(if active {
-                rgb(theme.on_accent)
-            } else {
-                rgb(theme.text)
-            })
+                theme.sidebar
+            }))
             .hover(move |style| {
                 style.bg(rgb(if active {
-                    theme.accent
+                    theme.accent_soft
                 } else {
-                    theme.card_hover
+                    theme.button_hover
                 }))
             })
+            .active(|style| style.opacity(0.86))
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.page = page;
+                this.set_page(page);
                 cx.notify();
             }))
-            .child(label)
+            .child(
+                div()
+                    .w(px(2.0))
+                    .h(px(16.0))
+                    .rounded_full()
+                    .bg(rgb(if active { theme.accent } else { theme.sidebar })),
+            )
+            .child(
+                div()
+                    .text_size(px(T_BODY))
+                    .font_weight(if active {
+                        gpui::FontWeight::MEDIUM
+                    } else {
+                        gpui::FontWeight::NORMAL
+                    })
+                    .text_color(rgb(if active { theme.accent } else { theme.text }))
+                    .child(label),
+            )
             .child(div().flex_1())
             .child(
                 div()
-                    .text_size(px(11.0))
-                    .text_color(rgb(if active { theme.on_accent } else { theme.muted }))
+                    .text_size(px(12.0))
+                    .text_color(rgb(if active { theme.accent } else { theme.faint }))
                     .child(value.unwrap_or_default()),
             )
     }
@@ -259,19 +452,35 @@ impl AppState {
         cx: &mut Context<Self>,
         handler: impl Fn(&mut Self, &mut Context<Self>) + 'static,
     ) -> impl IntoElement {
+        let theme = self.theme();
         div()
             .id(id)
-            .px_4()
-            .py_2()
-            .rounded_md()
+            .h(px(34.0))
+            .px(px(14.0))
+            .flex()
+            .items_center()
+            .rounded(px(RADIUS_CONTROL))
             .cursor_pointer()
-            .bg(if active { rgb(self.theme().accent) } else { rgb(self.theme().card_hover) })
-            .text_color(if active { rgb(self.theme().bg) } else { rgb(self.theme().text) })
-            .font_weight(if active {
-                gpui::FontWeight::BOLD
+            .bg(rgb(if active {
+                theme.accent
             } else {
-                gpui::FontWeight::NORMAL
+                theme.card_hover
+            }))
+            .text_color(rgb(if active {
+                theme.on_accent
+            } else {
+                theme.text
+            }))
+            .text_size(px(T_LABEL))
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .hover(move |style| {
+                style.bg(rgb(if active {
+                    theme.accent
+                } else {
+                    theme.button_hover
+                }))
             })
+            .active(|style| style.opacity(0.88))
             .on_click(cx.listener(move |this, _, _, cx| handler(this, cx)))
             .child(label)
     }
@@ -286,22 +495,61 @@ impl AppState {
         handler: impl Fn(&mut Self, &mut Context<Self>) + 'static,
     ) -> impl IntoElement {
         let theme = self.theme();
-        let (fg, bg, hover) = if danger {
-            (theme.red, theme.danger_bg, theme.danger_hover)
+        let (fg, bg, hover, border) = if danger {
+            (
+                theme.red,
+                theme.danger_bg,
+                theme.danger_hover,
+                theme.red,
+            )
         } else {
-            (theme.text, theme.card_hover, theme.button_hover)
+            (theme.text, theme.card, theme.button_hover, theme.border)
         };
         div()
             .id(id)
-            .px_4()
-            .py_2()
-            .rounded_md()
+            .h(px(34.0))
+            .px(px(14.0))
+            .flex()
+            .items_center()
+            .rounded(px(RADIUS_CONTROL))
             .cursor_pointer()
             .bg(rgb(bg))
             .border_1()
-            .border_color(rgb(if danger { theme.red } else { theme.border }))
+            .border_color(rgb(border))
+            .text_size(px(T_LABEL))
+            .font_weight(gpui::FontWeight::MEDIUM)
             .text_color(rgb(fg))
             .hover(move |style| style.bg(rgb(hover)))
+            .active(|style| style.opacity(0.86))
+            .on_click(cx.listener(move |this, _, _, cx| handler(this, cx)))
+            .child(label)
+    }
+
+    /// 页面唯一的主操作按钮（实心强调色）。
+    pub(crate) fn primary_button(
+        &self,
+        id: &'static str,
+        label: String,
+        cx: &mut Context<Self>,
+        handler: impl Fn(&mut Self, &mut Context<Self>) + 'static,
+    ) -> impl IntoElement {
+        let theme = self.theme();
+        div()
+            .id(id)
+            .h(px(34.0))
+            .px(px(14.0))
+            .flex()
+            .items_center()
+            .rounded(px(RADIUS_CONTROL))
+            .cursor_pointer()
+            .bg(rgb(theme.accent))
+            .border_1()
+            .border_color(rgb(theme.accent))
+            .text_size(px(T_LABEL))
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .text_color(rgb(theme.on_accent))
+            .hover(move |style| style.bg(rgb(theme.accent)).opacity(0.90))
+            .active(|style| style.opacity(0.82))
             .on_click(cx.listener(move |this, _, _, cx| handler(this, cx)))
             .child(label)
     }
@@ -359,17 +607,19 @@ impl AppState {
         div()
             .flex()
             .items_center()
-            .gap_1()
+            .gap(px(4.0))
             .child(
                 div()
                     .id(minus)
-                    .size(px(22.0))
+                    .size(px(24.0))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded_md()
+                    .rounded(px(6.0))
                     .bg(rgb(theme.card_hover))
                     .cursor_pointer()
+                    .hover(move |style| style.bg(rgb(theme.button_hover)))
+                    .active(|style| style.opacity(0.8))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.adjust_custom(temperature, index, -5, cx)
                     }))
@@ -377,21 +627,23 @@ impl AppState {
             )
             .child(
                 div()
-                    .w(px(28.0))
-                    .text_size(px(11.0))
+                    .w(px(30.0))
+                    .text_size(px(12.0))
                     .text_color(rgb(theme.text))
                     .child(value.to_string()),
             )
             .child(
                 div()
                     .id(plus)
-                    .size(px(22.0))
+                    .size(px(24.0))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded_md()
+                    .rounded(px(6.0))
                     .bg(rgb(theme.card_hover))
                     .cursor_pointer()
+                    .hover(move |style| style.bg(rgb(theme.button_hover)))
+                    .active(|style| style.opacity(0.8))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.adjust_custom(temperature, index, 5, cx)
                     }))
@@ -404,7 +656,7 @@ impl AppState {
         let theme = self.theme();
         let speeds = *speeds;
         let accent = theme.accent;
-        let border = theme.border;
+        let grid = theme.chart_grid;
         let peach = theme.peach;
         let chart = canvas(
             move |_, _, _| {},
@@ -419,11 +671,11 @@ impl AppState {
 
                 for level in [0.0f32, 50.0, 100.0, 150.0] {
                     let y = y_at(level);
-                    let mut grid = PathBuilder::stroke(px(1.0));
-                    grid.move_to(point(bounds.left() + padding, y));
-                    grid.line_to(point(bounds.right() - padding, y));
-                    if let Ok(path) = grid.build() {
-                        window.paint_path(path, rgb(border));
+                    let mut line = PathBuilder::stroke(px(1.0));
+                    line.move_to(point(bounds.left() + padding, y));
+                    line.line_to(point(bounds.right() - padding, y));
+                    if let Ok(path) = line.build() {
+                        window.paint_path(path, rgb(grid));
                     }
                 }
 
@@ -459,16 +711,16 @@ impl AppState {
         )
         .size_full();
 
-        let mut speeds_row = div().flex().w_full().justify_between().px_2();
-        let mut temps_row = div().flex().w_full().justify_between().px_2();
+        let mut speeds_row = div().flex().w_full().justify_between().px(px(8.0));
+        let mut temps_row = div().flex().w_full().justify_between().px(px(8.0));
         for index in 0..7 {
             speeds_row = speeds_row.child(
                 div()
                     .w(px(44.0))
                     .flex()
                     .justify_center()
-                    .text_size(px(10.0))
-                    .text_color(rgb(theme.muted))
+                    .text_size(px(12.0))
+                    .text_color(rgb(theme.faint))
                     .child(format!("{}%", speeds[index])),
             );
             temps_row = temps_row.child(
@@ -476,8 +728,8 @@ impl AppState {
                     .w(px(44.0))
                     .flex()
                     .justify_center()
-                    .text_size(px(10.0))
-                    .text_color(rgb(theme.muted))
+                    .text_size(px(12.0))
+                    .text_color(rgb(theme.faint))
                     .child(if index == 0 {
                         "—".to_string()
                     } else {
@@ -489,12 +741,12 @@ impl AppState {
         div()
             .flex()
             .flex_col()
-            .gap_1()
+            .gap(px(6.0))
             .child(
                 div()
                     .w_full()
                     .h(px(180.0))
-                    .rounded_md()
+                    .rounded(px(RADIUS_CONTROL))
                     .bg(rgb(theme.bg))
                     .child(chart),
             )
@@ -532,27 +784,54 @@ impl AppState {
     pub(crate) fn sidebar(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = self.theme();
         div()
-            .w(px(210.0))
+            .w(px(224.0))
             .h_full()
             .flex()
             .flex_col()
-            .gap_1()
-            .p_3()
+            .gap(px(2.0))
+            .p(px(16.0))
             .bg(rgb(theme.sidebar))
+            .border_r_1()
+            .border_color(rgb(theme.border))
             .child(
                 div()
                     .flex()
-                    .flex_col()
-                    .gap_1()
-                    .p_2()
-                    .pb_3()
+                    .items_center()
+                    .gap(px(11.0))
+                    .px(px(8.0))
+                    .py(px(10.0))
+                    .pb(px(18.0))
                     .child(
                         div()
-                            .text_size(px(19.0))
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .child("ECPilot"),
+                            .size(px(36.0))
+                            .rounded(px(10.0))
+                            .bg(rgb(theme.accent_soft))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(12.5))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(rgb(theme.accent))
+                            .child("EC"),
                     )
-                    .child(self.label("MSI Alpha 17 · Linux".into())),
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.0))
+                            .child(
+                                div()
+                                    .text_size(px(18.0))
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .child("ECPilot"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .text_color(rgb(theme.muted))
+                                    .child("MSI Alpha 17 · Linux"),
+                            ),
+                    ),
             )
             .child(self.section("硬件", "Hardware"))
             .child(self.nav(
@@ -594,9 +873,35 @@ impl AppState {
             .child(div().flex_1())
             .child(
                 div()
-                    .text_size(px(11.0))
-                    .text_color(rgb(theme.muted))
-                    .child(format!("v{} · GPUI", env!("CARGO_PKG_VERSION"))),
+                    .flex()
+                    .items_center()
+                    .gap(px(7.0))
+                    .px(px(10.0))
+                    .py(px(6.0))
+                    .child(
+                        div()
+                            .size(px(6.0))
+                            .rounded_full()
+                            .bg(rgb(if self.status.thermal_active {
+                                theme.green
+                            } else {
+                                theme.faint
+                            })),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(rgb(theme.faint))
+                            .child(format!(
+                                "v{} · {}",
+                                env!("CARGO_PKG_VERSION"),
+                                if self.status.thermal_active {
+                                    self.t("温控运行中", "guard on")
+                                } else {
+                                    self.t("温控已停止", "guard off")
+                                }
+                            )),
+                    ),
             )
     }
 
@@ -614,52 +919,39 @@ impl AppState {
         div()
             .flex()
             .justify_between()
-            .items_center()
+            .items_start()
             .w_full()
             .child(
                 div()
+                    .flex_1()
+                    .min_w(px(0.0))
                     .flex()
                     .flex_col()
-                    .gap_1()
+                    .gap(px(4.0))
                     .child(
                         div()
                             .text_size(px(24.0))
-                            .font_weight(gpui::FontWeight::BOLD)
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(rgb(theme.text))
                             .child(self.page_title()),
                     )
-                    .child(self.label(subtitle)),
+                    .child(
+                        div()
+                            .whitespace_normal()
+                            .text_size(px(12.0))
+                            .text_color(rgb(theme.muted))
+                            .child(subtitle),
+                    ),
             )
             .child(
                 div()
+                    .flex_shrink_0()
                     .flex()
                     .items_center()
-                    .gap_2()
-                    .child(self.badge("1s".into(), theme.muted))
-                    .child(self.badge(format!("EC {}", self.status.fw), theme.accent))
-                    .child(self.badge(self.status.fan_mode.clone(), theme.green))
-                    .child(self.badge(self.status.shift_mode.clone(), theme.peach)),
-            )
-    }
-
-    /// 系统详情中的一行。
-    pub(crate) fn info_line(&self, label: &str, value: String) -> Div {
-        let theme = self.theme();
-        div()
-            .flex()
-            .gap_2()
-            .py(px(1.0))
-            .child(
-                div()
-                    .w(px(54.0))
-                    .text_size(px(12.0))
-                    .text_color(rgb(theme.muted))
-                    .child(label.to_string()),
-            )
-            .child(
-                div()
-                    .text_size(px(12.0))
-                    .text_color(rgb(theme.text))
-                    .child(value),
+                    .gap(px(16.0))
+                    .pt(px(4.0))
+                    .child(self.status_item(self.status.fan_mode.clone(), theme.green))
+                    .child(self.status_item(self.status.shift_mode.clone(), theme.peach)),
             )
     }
 
