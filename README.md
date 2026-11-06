@@ -1,5 +1,7 @@
 # ECPilot
 
+**English** | [简体中文](README.zh-CN.md)
+
 A Rust + GPUI control center for MSI laptops on Linux, with SteelSeries KLC
 per-key RGB support built in.
 
