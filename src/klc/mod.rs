@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! MSI SteelSeries KLC 单键 RGB 支持。
 //!
 //! 协议、hidraw 发现、机型/布局表均从 MIT/Apache-2.0 的 `msi-klc`
@@ -19,7 +17,8 @@ const SEND_DELAY: Duration = Duration::from_millis(10);
 /// into the per-model color scale (software-owned brightness).
 pub fn apply_rgb(r: u8, g: u8, b: u8, brightness: u8) -> Result<()> {
     let table = models::ModelTable::load()?;
-    let (path, pid) = device::find_device(device::VID_MSI, None)?;
+    let pids = table.msi_pids();
+    let (path, pid) = device::find_device(device::VID_MSI, Some(&pids))?;
     let scale = table
         .find(device::VID_MSI, pid)
         .map(|model| model.color_scale)
@@ -51,7 +50,8 @@ pub fn off() -> Result<()> {
 /// Detection used by the UI without opening the device.
 pub fn detect() -> Option<(String, String)> {
     let table = models::ModelTable::load().ok()?;
-    let (path, pid) = device::find_device(device::VID_MSI, None).ok()?;
+    let pids = table.msi_pids();
+    let (path, pid) = device::find_device(device::VID_MSI, Some(&pids)).ok()?;
     let name = table
         .find(device::VID_MSI, pid)
         .map(|model| model.name.clone())

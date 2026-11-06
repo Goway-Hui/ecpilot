@@ -50,9 +50,25 @@ impl Details {
 
     /// Refresh the values that change while the app runs.
     pub fn refresh_dynamic(&mut self) {
-        self.mem = memory_summary();
-        self.swp = swap_summary();
-        self.disks = disk_summaries();
+        let dynamic = read_dynamic();
+        self.mem = dynamic.mem;
+        self.swp = dynamic.swp;
+        self.disks = dynamic.disks;
+    }
+}
+
+/// 需要周期刷新、且可能阻塞的字段；在后台线程读取。
+pub(crate) struct Dynamic {
+    pub mem: String,
+    pub swp: String,
+    pub disks: Vec<String>,
+}
+
+pub(crate) fn read_dynamic() -> Dynamic {
+    Dynamic {
+        mem: memory_summary(),
+        swp: swap_summary(),
+        disks: disk_summaries(),
     }
 }
 

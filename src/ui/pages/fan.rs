@@ -27,13 +27,18 @@ impl AppState {
                     .cursor_pointer()
                     .hover(|style| style.bg(rgb(self.theme().card_hover)))
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        let result = ec::apply_preset(id);
-                        if result.is_ok() {
-                            this.fan_preset = Some(id.to_string());
-                            save_fan_preset(id);
-                            save_fan_mode("advanced");
-                        }
-                        this.action(result, cx)
+                        this.run_action_then(
+                            cx,
+                            move || {
+                                let result = ec::apply_preset(id);
+                                if result.is_ok() {
+                                    save_fan_preset(id);
+                                    save_fan_mode("advanced");
+                                }
+                                result
+                            },
+                            move |this| this.fan_preset = Some(id.to_string()),
+                        );
                     }))
                     .child(
                         div()
@@ -72,12 +77,14 @@ impl AppState {
                                 mode == "auto",
                                 cx,
                                 |this, cx| {
-        let result = ec::set_fan_mode("auto");
-        if result.is_ok() {
-            save_fan_mode("auto");
-        }
-        this.action(result, cx)
-    },
+                                    this.run_action(cx, || {
+                                        let result = ec::set_fan_mode("auto");
+                                        if result.is_ok() {
+                                            save_fan_mode("auto");
+                                        }
+                                        result
+                                    });
+                                },
                             ))
                             .child(self.pill(
                                 "fan-silent",
@@ -85,12 +92,14 @@ impl AppState {
                                 mode == "silent",
                                 cx,
                                 |this, cx| {
-        let result = ec::set_fan_mode("silent");
-        if result.is_ok() {
-            save_fan_mode("silent");
-        }
-        this.action(result, cx)
-    },
+                                    this.run_action(cx, || {
+                                        let result = ec::set_fan_mode("silent");
+                                        if result.is_ok() {
+                                            save_fan_mode("silent");
+                                        }
+                                        result
+                                    });
+                                },
                             ))
                             .child(self.pill(
                                 "fan-advanced",
@@ -98,12 +107,14 @@ impl AppState {
                                 mode == "advanced",
                                 cx,
                                 |this, cx| {
-        let result = ec::set_fan_mode("advanced");
-        if result.is_ok() {
-            save_fan_mode("advanced");
-        }
-        this.action(result, cx)
-    },
+                                    this.run_action(cx, || {
+                                        let result = ec::set_fan_mode("advanced");
+                                        if result.is_ok() {
+                                            save_fan_mode("advanced");
+                                        }
+                                        result
+                                    });
+                                },
                             )),
                     ),
             )
@@ -123,12 +134,14 @@ impl AppState {
                                 self.status.shift_mode == "eco",
                                 cx,
                                 |this, cx| {
-        let result = ec::set_shift_mode("eco");
-        if result.is_ok() {
-            save_shift_mode("eco");
-        }
-        this.action(result, cx)
-    },
+                                    this.run_action(cx, || {
+                                        let result = ec::set_shift_mode("eco");
+                                        if result.is_ok() {
+                                            save_shift_mode("eco");
+                                        }
+                                        result
+                                    });
+                                },
                             ))
                             .child(self.pill(
                                 "shift-comfort",
@@ -136,12 +149,14 @@ impl AppState {
                                 self.status.shift_mode == "comfort",
                                 cx,
                                 |this, cx| {
-        let result = ec::set_shift_mode("comfort");
-        if result.is_ok() {
-            save_shift_mode("comfort");
-        }
-        this.action(result, cx)
-    },
+                                    this.run_action(cx, || {
+                                        let result = ec::set_shift_mode("comfort");
+                                        if result.is_ok() {
+                                            save_shift_mode("comfort");
+                                        }
+                                        result
+                                    });
+                                },
                             ))
                             .child(self.pill(
                                 "shift-turbo",
@@ -149,12 +164,14 @@ impl AppState {
                                 self.status.shift_mode == "turbo",
                                 cx,
                                 |this, cx| {
-        let result = ec::set_shift_mode("turbo");
-        if result.is_ok() {
-            save_shift_mode("turbo");
-        }
-        this.action(result, cx)
-    },
+                                    this.run_action(cx, || {
+                                        let result = ec::set_shift_mode("turbo");
+                                        if result.is_ok() {
+                                            save_shift_mode("turbo");
+                                        }
+                                        result
+                                    });
+                                },
                             )),
                     ),
             )
@@ -195,14 +212,14 @@ impl AppState {
                                 self.t("开启", "Turn on"),
                                 false,
                                 cx,
-                                |this, cx| this.action(ec::set_cooler_boost(true), cx),
+                                |this, cx| this.run_action(cx, || ec::set_cooler_boost(true)),
                             ))
                             .child(self.action_button(
                                 "cooler-off",
                                 self.t("关闭", "Turn off"),
                                 true,
                                 cx,
-                                |this, cx| this.action(ec::set_cooler_boost(false), cx),
+                                |this, cx| this.run_action(cx, || ec::set_cooler_boost(false)),
                             )),
                     ),
             )
@@ -326,19 +343,24 @@ impl AppState {
                                 cx,
                                 |this, cx| {
                                     let custom = this.custom.clone();
-                                    let result = ec::apply_custom(
-                                        &custom.cpu_temp,
-                                        &custom.cpu_speed,
-                                        &custom.gpu_temp,
-                                        &custom.gpu_speed,
+                                    this.run_action_then(
+                                        cx,
+                                        move || {
+                                            let result = ec::apply_custom(
+                                                &custom.cpu_temp,
+                                                &custom.cpu_speed,
+                                                &custom.gpu_temp,
+                                                &custom.gpu_speed,
+                                            );
+                                            if result.is_ok() {
+                                                save_fan_preset("custom");
+                                                save_fan_mode("advanced");
+                                            }
+                                            save_custom(&custom);
+                                            result
+                                        },
+                                        |this| this.fan_preset = Some("custom".into()),
                                     );
-                                    if result.is_ok() {
-                                        this.fan_preset = Some("custom".into());
-                                        save_fan_preset("custom");
-                                        save_fan_mode("advanced");
-                                    }
-                                    this.action(result, cx);
-                                    save_custom(&custom);
                                 },
                             )),
                     ),

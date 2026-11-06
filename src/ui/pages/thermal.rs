@@ -195,14 +195,17 @@ impl AppState {
                                 },
                                 false,
                                 cx,
-                                |this, cx| this.action(ec::set_thermal_guard(!this.status.thermal_active), cx),
+                                |this, cx| {
+                                    let on = !this.status.thermal_active;
+                                    this.run_action(cx, move || ec::set_thermal_guard(on))
+                                },
                             ))
                             .child(self.action_button(
                                 "thermal-restart",
                                 self.t("重启保护", "Restart"),
                                 false,
                                 cx,
-                                |this, cx| this.action(ec::restart_thermal_guard(), cx),
+                                |this, cx| this.run_action(cx, ec::restart_thermal_guard),
                             )),
                     ),
             );

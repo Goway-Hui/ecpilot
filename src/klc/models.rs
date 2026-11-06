@@ -23,9 +23,6 @@ const MSI_KLC_MODELS_JSON: &str = include_str!("data/msi-klc-models.json");
 struct RawModel {
     usb: String,
     color_scale: [f32; 3],
-    key_count: Option<u32>,
-    #[serde(default)]
-    num_key_coords: u32,
     #[serde(default)]
     key_coords: Option<HashMap<String, (u16, u16)>>,
     // Present in the source data for provenance/debugging but not needed
@@ -51,19 +48,12 @@ pub struct Model {
     /// before sending them to the panel, correcting for that panel's LED
     /// color response (see `scale_rgb`). `[1.0, 1.0, 1.0]` = no correction.
     pub color_scale: [f32; 3],
-    pub key_count: Option<u32>,
-    /// Number of entries the source spec provided in `key_coords` (may be
-    /// less than `key_count` — not every key gets a coordinate).
-    pub num_key_coords: u32,
     /// HID usage code -> physical `(x, y)` position, in the SteelSeries
     /// layout spec's coordinate space. Empty if the spec didn't provide one
     /// for this model.
     ///
-    /// TODO: not yet wired into `effect`'s wave program (`wave_origin` /
-    /// `wave_scale` in `protocol::EffectProgram`) — a real wave effect
-    /// would want to derive those from this map instead of the current
-    /// placeholder `(0, 0)`. Stored here so that's a follow-up, not a
-    /// re-extraction. `#[allow(dead_code)]` until something reads it.
+    /// Kept for future per-key effects (e.g. wave origins); the solid-color
+    /// path does not need it. `#[allow(dead_code)]` until something reads it.
     #[allow(dead_code)]
     pub key_coords: HashMap<u8, (u16, u16)>,
 }
@@ -96,8 +86,6 @@ impl ModelTable {
                 vid,
                 pid,
                 color_scale: r.color_scale,
-                key_count: r.key_count,
-                num_key_coords: r.num_key_coords,
                 key_coords,
             });
         }
@@ -108,11 +96,6 @@ impl ModelTable {
     /// Look up a model by exact `(vid, pid)`.
     pub fn find(&self, vid: u16, pid: u16) -> Option<&Model> {
         self.models.iter().find(|m| m.vid == vid && m.pid == pid)
-    }
-
-    /// All models, sorted by name.
-    pub fn all(&self) -> &[Model] {
-        &self.models
     }
 
     /// All PIDs under the MSI vendor id known to this table, used for
@@ -157,7 +140,8 @@ mod tests {
     fn model_table_parses() {
         let t = ModelTable::load().expect("embedded model table parses");
         // ~40 models as of the data extraction this was built against.
-        assert!(t.all().len() > 10, "expected a healthy number of models, got {}", t.all().len());
+        let count = t.msi_pids().len();
+        assert!(count > 10, "expected a healthy number of models, got {count}");
     }
 
     #[test]

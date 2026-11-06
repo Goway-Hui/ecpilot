@@ -5,46 +5,14 @@
 
 use anyhow::{bail, Context, Result};
 use std::fs;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 pub const MSI_EC: &str = "/sys/devices/platform/msi-ec";
-pub const EC_IO: &str = "/sys/kernel/debug/ec/ec0/io";
 
-/// helper 内置温控参数（与 `src/thermal.rs` 的 JSON 对应）。
-#[derive(Clone, serde::Deserialize)]
-pub struct ThermalConfig {
-    pub up1: i32,
-    pub up2: i32,
-    pub up3: i32,
-    pub down1: i32,
-    pub down2: i32,
-    pub down3: i32,
-    pub cap0: i32,
-    pub cap1: i32,
-    pub cap2: i32,
-    pub cap3: i32,
-    pub base_khz: i32,
-    pub dwell_ms: u64,
-    pub sample_ms: u64,
-    pub latch_temp: i32,
-    pub latch_secs: u64,
-}
-
-impl Default for ThermalConfig {
-    fn default() -> Self {
-        Self {
-            up1: 90, up2: 97, up3: 101,
-            down1: 85, down2: 92, down3: 96,
-            cap0: 4_200_000, cap1: 3_800_000, cap2: 2_400_000, cap3: 1_500_000,
-            base_khz: 2_501_000,
-            dwell_ms: 8_000, sample_ms: 200,
-            latch_temp: 90, latch_secs: 30,
-        }
-    }
-}
+use crate::thermal_config::ThermalConfig;
 
 #[derive(Clone, Default)]
 pub struct Status {
@@ -100,9 +68,23 @@ fn read_i32(path: &str) -> i32 {
     read_str(path).and_then(|s| s.parse().ok()).unwrap_or(0)
 }
 
+/// 一次枚举 `/sys/class/hwmon` 的 `(name, path)`，避免为每个传感器重复扫描。
+fn hwmon_devices() -> Vec<(String, PathBuf)> {
+    let mut devices = Vec::new();
+    if let Ok(dir) = fs::read_dir("/sys/class/hwmon") {
+        for entry in dir.flatten() {
+            let base = entry.path();
+            if let Some(name) = read_str(&base.join("name").to_string_lossy()) {
+                devices.push((name, base));
+            }
+        }
+    }
+    devices
+}
+
 /// 读取 EC、电池、风扇与 GPU 状态。
 ///
-/// GPU 与 EC 快照有 2 秒缓存，避免每秒启动 `nvidia-smi` 或频繁走 D-Bus。
+/// GPU 快照有 2 秒缓存，避免每秒启动 `nvidia-smi`。
 pub fn read_status() -> Status {
     let mut status = Status {
         fw: read_str(&format!("{MSI_EC}/fw_version")).unwrap_or_default(),
@@ -114,15 +96,11 @@ pub fn read_status() -> Status {
         ..Default::default()
     };
 
-    if let Ok(dir) = fs::read_dir("/sys/class/hwmon") {
-        for entry in dir.flatten() {
-            let base = entry.path();
-            if read_str(&base.join("name").to_string_lossy()).as_deref() == Some("msi_wmi_platform") {
-                status.cpu_fan = read_i32(&base.join("fan1_input").to_string_lossy());
-                status.gpu_fan = read_i32(&base.join("fan2_input").to_string_lossy());
-                break;
-            }
-        }
+    let hwmon = hwmon_devices();
+
+    if let Some((_, base)) = hwmon.iter().find(|(name, _)| name == "msi_wmi_platform") {
+        status.cpu_fan = read_i32(&base.join("fan1_input").to_string_lossy());
+        status.gpu_fan = read_i32(&base.join("fan2_input").to_string_lossy());
     }
 
     status.battery = read_i32("/sys/class/power_supply/BAT1/capacity");
@@ -132,23 +110,16 @@ pub fn read_status() -> Status {
     status.fn_swapped = read_str(&format!("{MSI_EC}/fn_key")).as_deref() == Some("left");
 
     // k10temp：按 label 读取 Tctl / Tccd1 / Tccd2，兼容双 CCD 机型。
-    if let Ok(dir) = fs::read_dir("/sys/class/hwmon") {
-        for entry in dir.flatten() {
-            let base = entry.path();
-            if read_str(&base.join("name").to_string_lossy()).as_deref() != Some("k10temp") {
-                continue;
+    if let Some((_, base)) = hwmon.iter().find(|(name, _)| name == "k10temp") {
+        for index in 1..=6 {
+            let label = read_str(&base.join(format!("temp{index}_label")).to_string_lossy());
+            let value = read_i32(&base.join(format!("temp{index}_input")).to_string_lossy()) / 1000;
+            match label.as_deref() {
+                Some("Tctl") => status.tctl = value,
+                Some("Tccd1") => status.tccd1 = value,
+                Some("Tccd2") => status.tccd2 = value,
+                _ => {}
             }
-            for index in 1..=6 {
-                let label = read_str(&base.join(format!("temp{index}_label")).to_string_lossy());
-                let value = read_i32(&base.join(format!("temp{index}_input")).to_string_lossy()) / 1000;
-                match label.as_deref() {
-                    Some("Tctl") => status.tctl = value,
-                    Some("Tccd1") => status.tccd1 = value,
-                    Some("Tccd2") => status.tccd2 = value,
-                    _ => {}
-                }
-            }
-            break;
         }
     }
 
@@ -169,22 +140,12 @@ pub fn read_status() -> Status {
             }
         }
     }
-    if let Ok(dir) = fs::read_dir("/sys/class/hwmon") {
-        for entry in dir.flatten() {
-            let base = entry.path();
-            if read_str(&base.join("name").to_string_lossy()).as_deref() != Some("amdgpu") {
-                continue;
-            }
-            status.igpu_temp =
-                read_i32(&base.join("temp1_input").to_string_lossy()) / 1000;
-            status.igpu_power =
-                read_i32(&base.join("power1_input").to_string_lossy()) as f32 / 1_000_000.0;
-            break;
-        }
+    if let Some((_, base)) = hwmon.iter().find(|(name, _)| name == "amdgpu") {
+        status.igpu_temp = read_i32(&base.join("temp1_input").to_string_lossy()) / 1000;
+        status.igpu_power =
+            read_i32(&base.join("power1_input").to_string_lossy()) as f32 / 1_000_000.0;
     }
-    if let Some(data) = ec_snapshot() {
-        status.usb_power_share = data.get(0xbf).is_some_and(|value| *value == 0x28);
-    }
+    status.usb_power_share = dbus_usb_power_share().unwrap_or(false);
 
     let gpu = read_gpu();
     status.gpu_name = gpu.name;
@@ -245,24 +206,6 @@ fn read_gpu() -> GpuInfo {
     info
 }
 
-static EC_CACHE: Mutex<Option<(Instant, Vec<u8>)>> = Mutex::new(None);
-
-/// 读取 256 字节 EC 快照，结果缓存 2 秒。
-fn ec_snapshot() -> Option<Vec<u8>> {
-    if let Ok(guard) = EC_CACHE.lock() {
-        if let Some((at, data)) = guard.as_ref() {
-            if at.elapsed() < Duration::from_secs(2) {
-                return Some(data.clone());
-            }
-        }
-    }
-    let data = dbus_data().ok()?;
-    if let Ok(mut guard) = EC_CACHE.lock() {
-        *guard = Some((Instant::now(), data.clone()));
-    }
-    Some(data)
-}
-
 /// Read the MSI MUX target from the UEFI variable (no root needed).
 pub fn mux_mode() -> String {
     let Ok(dir) = fs::read_dir("/sys/firmware/efi/efivars") else {
@@ -298,7 +241,7 @@ pub fn run_helper(args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// 通过 msi-ec sysfs 设置风扇模式（auto/silent/advanced）。
+/// 通过 root helper 设置风扇模式（auto/silent/advanced）。
 pub fn set_fan_mode(mode: &str) -> Result<()> {
     dbus_proxy()?
         .call_method("setFanMode", &(mode,))
@@ -306,7 +249,7 @@ pub fn set_fan_mode(mode: &str) -> Result<()> {
     Ok(())
 }
 
-/// 通过 msi-ec sysfs 设置性能模式（eco/comfort/sport/turbo）。
+/// 通过 root helper 设置性能模式（eco/comfort/sport/turbo）。
 pub fn set_shift_mode(mode: &str) -> Result<()> {
     dbus_proxy()?
         .call_method("setShiftMode", &(mode,))
@@ -452,6 +395,13 @@ fn dbus_data() -> Result<Vec<u8>> {
     Ok(data)
 }
 
+fn dbus_usb_power_share() -> Result<bool> {
+    let enabled: bool = dbus_proxy()?
+        .call("getUsbPowerShare", &())
+        .context("calling getUsbPowerShare")?;
+    Ok(enabled)
+}
+
 fn write_curve_dbus(curve: &Curve) -> Result<()> {
     let mut pairs = Vec::with_capacity(26);
     for index in 0..6 {
@@ -490,32 +440,6 @@ fn apply_curve_via_dbus(curve: &Curve) -> Result<()> {
         bail!("EC did not accept the curve; previous values restored");
     }
     set_fan_mode("advanced")?;
-    Ok(())
-}
-
-fn write_sysfs(path: &str, value: &str) -> Result<()> {
-    fs::write(path, value).with_context(|| format!("writing {value:?} to {path}"))
-}
-
-fn ec_open() -> Result<fs::File> {
-    fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(EC_IO)
-        .with_context(|| format!("opening {EC_IO} (enable debugfs + ec_sys write_support=1)"))
-}
-
-fn ec_read(file: &mut fs::File, start: u8, len: usize) -> Result<Vec<u8>> {
-    let mut buf = vec![0u8; len];
-    file.seek(SeekFrom::Start(start as u64))?;
-    file.read_exact(&mut buf)?;
-    Ok(buf)
-}
-
-fn ec_write(file: &mut fs::File, start: u8, data: &[u8]) -> Result<()> {
-    file.seek(SeekFrom::Start(start as u64))?;
-    file.write_all(data)?;
-    file.flush()?;
     Ok(())
 }
 
@@ -559,19 +483,6 @@ fn preset(name: &str) -> Result<Curve> {
     Ok(curve)
 }
 
-fn parse_bytes(value: &str) -> Result<Vec<u8>> {
-    value
-        .split(',')
-        .map(|part| part.trim().parse::<u8>().context("curve byte"))
-        .collect()
-}
-
-fn to_array<const N: usize>(values: Vec<u8>) -> Result<[u8; N]> {
-    values
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("wrong curve length"))
-}
-
 fn validate(temp: &[u8; 6], speed: &[u8; 7]) -> Result<()> {
     for (i, &t) in temp.iter().enumerate() {
         if !(40..=95).contains(&t) {
@@ -595,60 +506,14 @@ fn validate(temp: &[u8; 6], speed: &[u8; 7]) -> Result<()> {
     Ok(())
 }
 
-fn apply_curve(curve: &Curve) -> Result<()> {
-    let mut ec = ec_open()?;
-    let snapshot = ec_read(&mut ec, 0, 256)?;
-    let write = |ec: &mut fs::File| -> Result<()> {
-        ec_write(ec, 0x6a, &curve.cpu_temp)?;
-        ec_write(ec, 0x72, &curve.cpu_speed)?;
-        ec_write(ec, 0x82, &curve.gpu_temp)?;
-        ec_write(ec, 0x8a, &curve.gpu_speed)?;
-        Ok(())
-    };
-    write(&mut ec)?;
-    let readback = ec_read(&mut ec, 0, 256)?;
-    let ok = readback[0x6a..0x70] == curve.cpu_temp[..]
-        && readback[0x72..0x79] == curve.cpu_speed[..]
-        && readback[0x82..0x88] == curve.gpu_temp[..]
-        && readback[0x8a..0x91] == curve.gpu_speed[..];
-    if !ok {
-        let _ = ec_write(&mut ec, 0, &snapshot);
-        bail!("EC did not accept the curve; previous values restored");
-    }
-    let _ = write_sysfs(&format!("{MSI_EC}/fan_mode"), "advanced");
-    Ok(())
-}
-
-/// Root-side entry point, invoked as `ecpilot --helper ...`.
+/// Root-side entry point for `pkexec ecpilot --helper ...`.
+///
+/// 只保留必须由 GUI 进程外部提权的操作；EC/sysfs 写入统一走 D-Bus helper。
 pub fn helper_main(args: &[String]) -> Result<()> {
     let Some(command) = args.first().map(String::as_str) else {
         bail!("missing helper command");
     };
     match command {
-        "fan-mode" => write_sysfs(&format!("{MSI_EC}/fan_mode"), args.get(1).context("mode")?),
-        "shift-mode" => write_sysfs(&format!("{MSI_EC}/shift_mode"), args.get(1).context("mode")?),
-        "cooler-boost" => write_sysfs(&format!("{MSI_EC}/cooler_boost"), args.get(1).context("state")?),
-        "webcam" => write_sysfs(&format!("{MSI_EC}/webcam"), args.get(1).context("state")?),
-        "battery" => write_sysfs(
-            "/sys/class/power_supply/BAT1/charge_control_end_threshold",
-            args.get(1).context("threshold")?,
-        ),
-        "curve" => apply_curve(&preset(args.get(1).context("preset")?)?),
-        "curve-custom" => {
-            let cpu_temp: [u8; 6] = to_array(parse_bytes(args.get(1).context("cpu temp")?)?)?;
-            let cpu_speed: [u8; 7] = to_array(parse_bytes(args.get(2).context("cpu speed")?)?)?;
-            let gpu_temp: [u8; 6] = to_array(parse_bytes(args.get(3).context("gpu temp")?)?)?;
-            let gpu_speed: [u8; 7] = to_array(parse_bytes(args.get(4).context("gpu speed")?)?)?;
-            let curve = Curve {
-                cpu_temp,
-                cpu_speed,
-                gpu_temp,
-                gpu_speed,
-            };
-            validate(&curve.cpu_temp, &curve.cpu_speed)?;
-            validate(&curve.gpu_temp, &curve.gpu_speed)?;
-            apply_curve(&curve)
-        }
         "klc" => {
             let r = args.get(1).context("r")?.parse()?;
             let g = args.get(2).context("g")?.parse()?;
@@ -697,9 +562,4 @@ mod tests {
         assert!(validate(&temp, &speed).is_err());
     }
 
-    #[test]
-    fn parses_byte_lists() {
-        assert_eq!(parse_bytes("1, 2, 3").unwrap(), vec![1, 2, 3]);
-        assert!(parse_bytes("1, 300").is_err());
-    }
 }

@@ -6,14 +6,12 @@
 
 use anyhow::{Context, Result, bail};
 use nix::ioctl_readwrite;
-use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
-use std::os::fd::{AsFd, AsRawFd};
+use std::io::Write;
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
-use crate::klc::protocol::{FEATURE_REPORT_LEN, OUTPUT_REPORT_LEN};
+use crate::klc::protocol::FEATURE_REPORT_LEN;
 
 pub const VID_MSI: u16 = 0x1038;
 
@@ -51,18 +49,6 @@ pub fn find_device(vid: u16, pids: Option<&[u16]>) -> Result<(PathBuf, u16)> {
         "no /dev/hidraw* device found for vid=0x{vid:04x} pid={pid_desc}. Pass --path /dev/hidrawN \
          explicitly, or check `grep HID_ID /sys/class/hidraw/*/device/uevent`."
     )
-}
-
-/// Try to resolve the `(vid, pid)` of an already-known hidraw device path
-/// (e.g. one given via `--path`) by reading back its sysfs `uevent`, the
-/// same way `find_device` does for auto-detection. Returns `None` if the
-/// path isn't a `/dev/hidrawN`-shaped node or its uevent can't be read —
-/// callers should treat that as "model unknown", not a hard error.
-pub fn probe_vid_pid(path: &Path) -> Option<(u16, u16)> {
-    let name = path.file_name()?.to_str()?;
-    let uevent_path = PathBuf::from("/sys/class/hidraw").join(name).join("device/uevent");
-    let content = fs::read_to_string(uevent_path).ok()?;
-    parse_hid_id(&content)
 }
 
 /// Parse `HID_ID=0003:00001038:0000113A` into `(vid, pid)`. The bus type
@@ -103,34 +89,10 @@ impl Device {
         Ok(())
     }
 
-    /// Write an output report (vendor command or commit/"show" frame) via a
-    /// plain `write()`.
+    /// Write an output report (commit/"show" frame) via a plain `write()`.
     pub fn write_output(&self, buf: &[u8]) -> Result<()> {
         (&self.file).write_all(buf).context("writing output report")?;
         Ok(())
-    }
-
-    /// Best-effort drain of any stale input report, non-blocking.
-    pub fn drain_input(&self) -> Result<()> {
-        while self.read_input(Duration::from_millis(50))?.is_some() {}
-        Ok(())
-    }
-
-    /// Read one input report (GET reply), waiting up to `timeout` via
-    /// `poll()`. Returns `None` on timeout.
-    pub fn read_input(&self, timeout: Duration) -> Result<Option<Vec<u8>>> {
-        let fd = self.file.as_fd();
-        let mut fds = [PollFd::new(fd, PollFlags::POLLIN)];
-        let timeout_ms: i32 = timeout.as_millis().try_into().unwrap_or(i32::MAX);
-        let n = poll(&mut fds, PollTimeout::try_from(timeout_ms).unwrap_or(PollTimeout::MAX))
-            .context("poll() on hidraw fd")?;
-        if n == 0 {
-            return Ok(None);
-        }
-        let mut buf = vec![0u8; OUTPUT_REPORT_LEN];
-        let read = (&self.file).read(&mut buf).context("reading input report")?;
-        buf.truncate(read);
-        Ok(Some(buf))
     }
 }
 

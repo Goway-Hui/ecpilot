@@ -24,7 +24,8 @@ Qt-based `MControlCenter` working tree.
 - GPU telemetry: power, utilization, temperature, VRAM (cached for 2 s)
 - Chinese/English UI switch; dark/light theme; language, theme and custom
   fan curve are persisted under `$XDG_CONFIG_HOME/ecpilot/`
-- Single-instance guard and a StatusNotifierItem tray: left click (or the
+- Single-instance guard and a StatusNotifierItem tray: a second launch wakes
+  the running window instead of starting another copy. Left click (or the
   "显示窗口" menu item) restores the window; closing minimizes to the tray by
   default, and the tray menu can quit the whole app. GPUI has no native tray API, so `ksni` runs its own D-Bus
   thread and sends `TrayCommand`s to the GPUI main thread.
@@ -34,8 +35,9 @@ Qt-based `MControlCenter` working tree.
 | Path | Purpose |
 |---|---|
 | `src/main.rs` | GPUI views, navigation, language, single-instance lock, startup policy |
-| `src/ec.rs` | unprivileged sysfs reads; zbus client for the root helper; 2 s GPU/EC caches |
+| `src/ec.rs` | unprivileged sysfs reads; zbus client for the root helper; 2 s GPU cache |
 | `src/helper.rs` | root D-Bus helper: EC whitelist, batched writes, sysfs switches |
+| `src/thermal_config.rs` | shared thermal-guard parameters (GUI + helper) |
 | `src/bin/helper.rs` | standalone `ecpilot-helper` binary |
 | `src/tray.rs` | minimal ksni StatusNotifierItem |
 | `src/klc/` | KLC protocol, hidraw I/O, model/layout tables (ported from `msi-klc`) |
@@ -123,7 +125,8 @@ The model/layout JSON files are embedded at compile time.
 - "Minimize to tray on close" is on by default: niri's `close-window`
   shortcut and the window close button minimize to the tray, so the tray
   stays available. Disable it in Settings if you want closing to quit the
-  whole app (the tray disappears with the process).
+  whole app (the tray disappears with the process). If no StatusNotifier host
+  is running, closing the window quits instead of leaving the app invisible.
 - Keyboard backlight (EC 0xD3/0xF3) is not exposed on this model; KLC RGB
   controls the keyboard lighting instead.
 - MUX switching delegates to `msi-gpu-switcher`.

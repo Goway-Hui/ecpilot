@@ -219,7 +219,11 @@ pub(crate) fn save_custom(curve: &CustomCurve) {
         let _ = std::fs::create_dir_all(parent);
     }
     if let Ok(text) = serde_json::to_string_pretty(curve) {
-        let _ = std::fs::write(custom_path(), text);
+        let path = custom_path();
+        let temp = path.with_extension("json.tmp");
+        if std::fs::write(&temp, text).is_ok() {
+            let _ = std::fs::rename(&temp, &path);
+        }
     }
 }
 

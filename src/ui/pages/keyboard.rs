@@ -34,7 +34,10 @@ impl AppState {
                     .cursor_pointer()
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.color = color;
-                        this.action(ec::klc_color(color.0, color.1, color.2, this.brightness), cx)
+                        let brightness = this.brightness;
+                        this.run_action(cx, move || {
+                            ec::klc_color(color.0, color.1, color.2, brightness)
+                        })
                     })),
             );
         }
@@ -102,7 +105,8 @@ impl AppState {
                             .child(self.action_button("bright-down", "−".into(), false, cx, |this, cx| {
                                 this.brightness = this.brightness.saturating_sub(32);
                                 let (r, g, b) = this.color;
-                                this.action(ec::klc_color(r, g, b, this.brightness), cx)
+                                let brightness = this.brightness;
+                                this.run_action(cx, move || ec::klc_color(r, g, b, brightness))
                             }))
                             .child(
                                 div()
@@ -113,7 +117,8 @@ impl AppState {
                             .child(self.action_button("bright-up", "+".into(), false, cx, |this, cx| {
                                 this.brightness = this.brightness.saturating_add(32);
                                 let (r, g, b) = this.color;
-                                this.action(ec::klc_color(r, g, b, this.brightness), cx)
+                                let brightness = this.brightness;
+                                this.run_action(cx, move || ec::klc_color(r, g, b, brightness))
                             })),
                     )
                     .child(self.progress(self.brightness as f32 / 2.55, self.theme().accent)),
@@ -124,7 +129,7 @@ impl AppState {
                     self.t("关闭全部灯光", "All lights off"),
                     true,
                     cx,
-                    |this, cx| this.action(ec::klc_off(), cx),
+                    |this, cx| this.run_action(cx, ec::klc_off),
                 )),
             )
     }

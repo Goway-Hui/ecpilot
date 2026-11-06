@@ -21,6 +21,22 @@ pub fn ec_address_allowed(address: i32) -> bool {
         || (0x8a..=0x90).contains(&address)
 }
 
+/// EC 0xBF 的 USB Power Share 位：两个位同时置位表示开启。
+pub fn usb_power_share_enabled(current: u8) -> bool {
+    current & 0x28 == 0x28
+}
+
+/// 读改写 EC 0xBF：保留同一字节内的其它位域（如 Fn/Win 交换位）。
+pub fn usb_power_share_byte(current: u8, on: bool) -> u8 {
+    let mut value = current & !0x28;
+    if on {
+        value |= 0x28;
+    } else {
+        value |= 0x08;
+    }
+    value
+}
+
 fn failed(error: impl std::fmt::Display) -> zbus::fdo::Error {
     zbus::fdo::Error::Failed(error.to_string())
 }
@@ -189,27 +205,22 @@ impl EcHelper {
 
     #[zbus(name = "setUsbPowerShare")]
     fn set_usb_power_share(&self, on: bool) -> zbus::fdo::Result<()> {
-        // 读改写，保留同一字节内的其他位域（如 Fn/Win 交换位）。
-        let current = ec_read_byte(0xbf).ok_or_else(|| failed("cannot read EC 0xbf for usb power share"))? as i32;
-        let mut value = current & !0x28;
-        if on {
-            value |= 0x28;
-        } else {
-            value |= 0x08;
-        }
-        ec_write_byte(0xbf, value)
+        let current =
+            ec_read_byte(0xbf).ok_or_else(|| failed("cannot read EC 0xbf for usb power share"))?;
+        ec_write_byte(0xbf, usb_power_share_byte(current, on) as i32)
     }
 
-    #[zbus(name = "setFnWinSwap")]
+    #[zbus(name = "getUsbPowerShare")]
+    fn get_usb_power_share(&self) -> zbus::fdo::Result<bool> {
+        let current =
+            ec_read_byte(0xbf).ok_or_else(|| failed("cannot read EC 0xbf for usb power share"))?;
+        Ok(usb_power_share_enabled(current))
+    }
+
     /// 通过 msi-ec sysfs 交换 Fn/Win 键。
-fn set_fn_win_swap(&self, on: bool) -> zbus::fdo::Result<()> {
+    #[zbus(name = "setFnWinSwap")]
+    fn set_fn_win_swap(&self, on: bool) -> zbus::fdo::Result<()> {
         set_fn_win_swap(on)
-    }
-
-    #[zbus(name = "quit")]
-    fn quit(&self) {
-        self.thermal.shutdown_safe();
-        std::process::exit(0);
     }
 }
 
@@ -258,6 +269,16 @@ mod tests {
         for address in [0x6a, 0x6f, 0x72, 0x78, 0x82, 0x87, 0x8a, 0x90] {
             assert!(ec_address_allowed(address), "0x{address:02x} should be allowed");
         }
+    }
+
+    #[test]
+    fn usb_power_share_preserves_other_bits() {
+        assert_eq!(usb_power_share_byte(0x00, true), 0x28);
+        assert_eq!(usb_power_share_byte(0x01, true), 0x29);
+        assert_eq!(usb_power_share_byte(0x28, false), 0x08);
+        assert_eq!(usb_power_share_byte(0x29, false), 0x09);
+        assert!(usb_power_share_enabled(usb_power_share_byte(0x01, true)));
+        assert!(!usb_power_share_enabled(usb_power_share_byte(0x29, false)));
     }
 
     #[test]

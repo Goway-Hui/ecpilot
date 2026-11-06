@@ -3,7 +3,8 @@
 //! UI 渲染在 `ui` 模块中，本模块只负责状态和生命周期。
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -77,13 +78,13 @@ pub(crate) fn spawn_tray_polling(
     install_ipc_signals();
     cx.spawn(async move |cx| loop {
         if IPC_SHOW.swap(false, std::sync::atomic::Ordering::Relaxed) {
-            let _ = cx.update(|cx| show_or_open(cx, &windows));
+            cx.update(|cx| show_or_open(cx, &windows));
         }
         while let Ok(command) = rx.try_recv() {
             match command {
                 TrayCommand::Quit => std::process::exit(0),
                 TrayCommand::Show => {
-                    let _ = cx.update(|cx| show_or_open(cx, &windows));
+                    cx.update(|cx| show_or_open(cx, &windows));
                 }
             }
         }
@@ -123,11 +124,50 @@ fn show_or_open(cx: &mut App, windows: &TrayWindows) {
     }
 }
 
-/// 全局“关闭到托盘”开关；窗口关闭回调在 AppState 之外读取。
-static CLOSE_TO_TRAY: AtomicBool = AtomicBool::new(true);
+/// 后台 I/O 任务：特权操作或外部命令，在独立线程串行执行。
+pub(crate) type Job = Box<dyn FnOnce() + Send + 'static>;
 
-pub(crate) fn set_close_to_tray(enabled: bool) {
-    CLOSE_TO_TRAY.store(enabled, Ordering::Relaxed);
+/// 后台线程读到的硬件快照；UI 只负责应用，不做阻塞 I/O。
+struct Snapshot {
+    status: ec::Status,
+    mux: String,
+    mem: String,
+    swp: String,
+    disks: Vec<String>,
+}
+
+fn read_snapshot() -> Snapshot {
+    let dynamic = details::read_dynamic();
+    Snapshot {
+        status: ec::read_status(),
+        mux: ec::mux_mode(),
+        mem: dynamic.mem,
+        swp: dynamic.swp,
+        disks: dynamic.disks,
+    }
+}
+
+/// 串行执行特权任务，并每秒采样一次硬件状态。
+fn io_worker(jobs: Receiver<Job>, events: Sender<Snapshot>) {
+    if events.send(read_snapshot()).is_err() {
+        return;
+    }
+    loop {
+        match jobs.recv_timeout(Duration::from_secs(1)) {
+            Ok(job) => {
+                let _ = catch_unwind(AssertUnwindSafe(job));
+                if events.send(read_snapshot()).is_err() {
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if events.send(read_snapshot()).is_err() {
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
 }
 
 pub(crate) struct AppState {
@@ -177,11 +217,13 @@ pub(crate) struct AppState {
     thermal_level_seen: Option<i32>,
     /// 上次高温提醒时间（15 分钟限流）。
     last_hot_notify: Option<Instant>,
+    /// 后台 I/O 线程的任务队列。
+    jobs: Sender<Job>,
 }
 
 
 impl AppState {
-    /// 创建状态并启动 1 秒刷新定时器。
+    /// 创建状态，并启动后台采样/特权操作线程。
     pub(crate) fn new(cx: &mut Context<Self>, page: Page) -> Self {
         crate::config::migrate_legacy_configs();
         let config = load_config();
@@ -194,6 +236,11 @@ impl AppState {
             Some("light") => ThemeMode::Light,
             _ => ThemeMode::Dark,
         };
+        let (jobs, job_rx) = mpsc::channel::<Job>();
+        let (event_tx, events) = mpsc::channel::<Snapshot>();
+        let _ = std::thread::Builder::new()
+            .name("ecpilot-io".into())
+            .spawn(move || io_worker(job_rx, event_tx));
         let mut state = Self {
             page,
             lang,
@@ -218,62 +265,64 @@ impl AppState {
             fan_preset: saved_fan_preset.clone(),
             thermal_level_seen: None,
             last_hot_notify: None,
+            jobs,
         };
-        state.refresh();
-        state.restore_fan_config(
-            saved_fan_mode.as_deref(),
-            saved_fan_preset.as_deref(),
-            saved_shift_mode.as_deref(),
-        );
-        state.refresh();
-        state.start_timer(cx);
+        state.start_event_loop(cx, events);
+        state.restore_fan_config(cx, saved_fan_mode, saved_fan_preset, saved_shift_mode);
         state
     }
 
-    /// 启动时恢复上次选择的风扇模式、曲线预设和性能模式。
+    /// 启动时恢复上次选择的风扇模式、曲线预设和性能模式（后台执行）。
     fn restore_fan_config(
         &mut self,
-        mode: Option<&str>,
-        preset: Option<&str>,
-        shift: Option<&str>,
+        cx: &mut Context<Self>,
+        mode: Option<String>,
+        preset: Option<String>,
+        shift: Option<String>,
     ) {
-        let mut errors = Vec::new();
-        if let Some(preset) = preset {
-            let result = if preset == "custom" {
-                ec::apply_custom(
-                    &self.custom.cpu_temp,
-                    &self.custom.cpu_speed,
-                    &self.custom.gpu_temp,
-                    &self.custom.gpu_speed,
-                )
+        let custom = self.custom.clone();
+        self.run_action_quiet(cx, move || {
+            let mut errors = Vec::new();
+            if let Some(preset) = preset.as_deref() {
+                let result = if preset == "custom" {
+                    ec::apply_custom(
+                        &custom.cpu_temp,
+                        &custom.cpu_speed,
+                        &custom.gpu_temp,
+                        &custom.gpu_speed,
+                    )
+                } else {
+                    ec::apply_preset(preset)
+                };
+                if let Err(error) = result {
+                    errors.push(format!("{error:#}"));
+                }
+            }
+            if let Some(mode) = mode.as_deref() {
+                if let Err(error) = ec::set_fan_mode(mode) {
+                    errors.push(format!("{error:#}"));
+                }
+            }
+            if let Some(shift) = shift.as_deref() {
+                if let Err(error) = ec::set_shift_mode(shift) {
+                    errors.push(format!("{error:#}"));
+                }
+            }
+            if errors.is_empty() {
+                Ok(())
             } else {
-                ec::apply_preset(preset)
-            };
-            if let Err(error) = result {
-                errors.push(format!("{error:#}"));
+                Err(anyhow::anyhow!(errors.join("; ")))
             }
-        }
-        if let Some(mode) = mode {
-            if let Err(error) = ec::set_fan_mode(mode) {
-                errors.push(format!("{error:#}"));
-            }
-        }
-        if let Some(shift) = shift {
-            if let Err(error) = ec::set_shift_mode(shift) {
-                errors.push(format!("{error:#}"));
-            }
-        }
-        if !errors.is_empty() {
-            self.message = errors.join("; ");
-            self.message_ok = false;
-        }
+        });
     }
 
-    /// 从 sysfs / D-Bus 刷新硬件状态。
-    fn refresh(&mut self) {
-        self.status = ec::read_status();
-        self.mux = ec::mux_mode();
-        self.details.refresh_dynamic();
+    /// 应用后台线程采样的硬件快照。
+    fn apply_snapshot(&mut self, snapshot: Snapshot) {
+        self.status = snapshot.status;
+        self.mux = snapshot.mux;
+        self.details.mem = snapshot.mem;
+        self.details.swp = snapshot.swp;
+        self.details.disks = snapshot.disks;
         seed_history(&mut self.cpu_history, self.status.cpu_temp as f32);
         seed_history(&mut self.gpu_history, self.status.gpu_util as f32);
         seed_history(&mut self.fan_history, (self.status.cpu_fan as f32 / 60.0).min(100.0));
@@ -353,24 +402,111 @@ impl AppState {
                 "critical",
             ),
         };
-        spawn_notify(title, body, &urgency);
+        spawn_notify(title, body, urgency);
     }
 
-    /// 每秒刷新一次界面数据。
-    fn start_timer(&self, cx: &mut Context<Self>) {
+    /// 在后台线程执行特权操作；结果回到 UI 线程。
+    pub(crate) fn run_action<F>(&mut self, cx: &mut Context<Self>, work: F)
+    where
+        F: FnOnce() -> anyhow::Result<()> + Send + 'static,
+    {
+        self.run_action_inner(cx, work, |_| {}, false);
+    }
+
+    /// 同上，但成功时不显示“已完成”提示（用于启动恢复）。
+    pub(crate) fn run_action_quiet<F>(&mut self, cx: &mut Context<Self>, work: F)
+    where
+        F: FnOnce() -> anyhow::Result<()> + Send + 'static,
+    {
+        self.run_action_inner(cx, work, |_| {}, true);
+    }
+
+    /// 同上，并在成功时回到 UI 线程执行 `on_success`（用于更新本地状态）。
+    pub(crate) fn run_action_then<F, S>(
+        &mut self,
+        cx: &mut Context<Self>,
+        work: F,
+        on_success: S,
+    ) where
+        F: FnOnce() -> anyhow::Result<()> + Send + 'static,
+        S: FnOnce(&mut Self) + 'static,
+    {
+        self.run_action_inner(cx, work, on_success, false);
+    }
+
+    fn run_action_inner<F, S>(
+        &mut self,
+        cx: &mut Context<Self>,
+        work: F,
+        on_success: S,
+        quiet_success: bool,
+    ) where
+        F: FnOnce() -> anyhow::Result<()> + Send + 'static,
+        S: FnOnce(&mut Self) + 'static,
+    {
+        let (result_tx, result_rx) = mpsc::channel();
+        let job: Job = Box::new(move || {
+            let _ = result_tx.send(work());
+        });
+        if self.jobs.send(job).is_err() {
+            self.action(Err(anyhow::anyhow!("后台 I/O 线程已停止")), cx);
+            return;
+        }
         cx.spawn(async move |this, cx| loop {
-            cx.background_executor()
-                .timer(std::time::Duration::from_secs(1))
-                .await;
-            if this
-                .update(cx, |this, cx| {
-                    this.refresh();
-                    cx.notify();
-                })
-                .is_err()
-            {
-                break;
+            match result_rx.try_recv() {
+                Ok(result) => {
+                    let ok = result.is_ok();
+                    let _ = this.update(cx, |this, cx| {
+                        if ok {
+                            on_success(this);
+                        }
+                        if quiet_success && ok {
+                            cx.notify();
+                        } else {
+                            this.action(result, cx);
+                        }
+                    });
+                    break;
+                }
+                Err(TryRecvError::Empty) => {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(50))
+                        .await;
+                }
+                Err(TryRecvError::Disconnected) => {
+                    let _ = this.update(cx, |this, cx| {
+                        this.action(Err(anyhow::anyhow!("后台 I/O 线程已停止")), cx)
+                    });
+                    break;
+                }
             }
+        })
+        .detach();
+    }
+
+    /// 消费后台快照并刷新 UI。
+    fn start_event_loop(&self, cx: &mut Context<Self>, events: Receiver<Snapshot>) {
+        cx.spawn(async move |this, cx| loop {
+            loop {
+                match events.try_recv() {
+                    Ok(snapshot) => {
+                        if this
+                            .update(cx, |this, cx| {
+                                this.apply_snapshot(snapshot);
+                                cx.notify();
+                            })
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => return,
+                }
+            }
+            cx.background_executor()
+                .timer(Duration::from_millis(50))
+                .await;
         })
         .detach();
     }
@@ -399,7 +535,6 @@ impl AppState {
         };
         self.message = message;
         self.message_ok = ok;
-        self.refresh();
         cx.notify();
     }
 
@@ -430,7 +565,8 @@ impl Render for AppState {
                     "3" => Some(Page::Keyboard),
                     "4" => Some(Page::Gpu),
                     "5" => Some(Page::Telemetry),
-                    "6" => Some(Page::Settings),
+                    "6" => Some(Page::Thermal),
+                    "7" => Some(Page::Settings),
                     _ => None,
                 };
                 if let Some(page) = page {
@@ -464,8 +600,6 @@ fn push_history(history: &mut VecDeque<f32>, value: f32) {
 
 /// 通过 notify-send 发桌面通知；没有通知服务时静默失败。
 fn spawn_notify(title: String, body: String, urgency: &str) {
-    let title = title;
-    let body = body;
     let urgency = urgency.to_owned();
     std::thread::spawn(move || {
         let _ = std::process::Command::new("notify-send")

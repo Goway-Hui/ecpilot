@@ -80,21 +80,27 @@ impl AppState {
                                 "60%".into(),
                                 self.status.threshold == 60,
                                 cx,
-                                |this, cx| this.action(ec::set_battery_threshold(60), cx),
+                                |this, cx| {
+                                    this.run_action(cx, || ec::set_battery_threshold(60))
+                                },
                             ))
                             .child(self.pill(
                                 "battery-80",
                                 "80%".into(),
                                 self.status.threshold == 80,
                                 cx,
-                                |this, cx| this.action(ec::set_battery_threshold(80), cx),
+                                |this, cx| {
+                                    this.run_action(cx, || ec::set_battery_threshold(80))
+                                },
                             ))
                             .child(self.pill(
                                 "battery-100",
                                 "100%".into(),
                                 self.status.threshold == 100,
                                 cx,
-                                |this, cx| this.action(ec::set_battery_threshold(100), cx),
+                                |this, cx| {
+                                    this.run_action(cx, || ec::set_battery_threshold(100))
+                                },
                             )),
                     )
                     .child(self.label(format!(
@@ -131,7 +137,7 @@ impl AppState {
                         cx,
                         |this, cx| {
                             let on = !this.status.webcam;
-                            this.action(ec::set_webcam(on), cx)
+                            this.run_action(cx, move || ec::set_webcam(on))
                         },
                     )),
             )
@@ -152,7 +158,7 @@ impl AppState {
                         cx,
                         |this, cx| {
                             let on = !this.status.usb_power_share;
-                            this.action(ec::set_usb_power_share(on), cx)
+                            this.run_action(cx, move || ec::set_usb_power_share(on))
                         },
                     )),
             )
@@ -184,7 +190,7 @@ impl AppState {
                         cx,
                         |this, cx| {
                             let on = !this.status.fn_swapped;
-                            this.action(ec::set_fn_win_swap(on), cx)
+                            this.run_action(cx, move || ec::set_fn_win_swap(on))
                         },
                     )),
             )
@@ -223,7 +229,6 @@ impl AppState {
                         cx,
                         |this, cx| {
                             this.close_to_tray = !this.close_to_tray;
-                            crate::app::set_close_to_tray(this.close_to_tray);
                             save_close_to_tray(this.close_to_tray);
                             cx.notify();
                         },
@@ -240,7 +245,7 @@ impl AppState {
                         self.t("版本", "Version"),
                         env!("CARGO_PKG_VERSION")
                     )))
-                    .child(self.label("GPUI 0.2 · Rust".into()))
+                    .child(self.label("GPUI (gpui-fast) · Rust".into()))
                     .child(self.label(self.t(
                         "KLC 协议已内置（源自 msi-klc，MIT/Apache-2.0）。",
                         "KLC protocol is built in (ported from msi-klc, MIT/Apache-2.0).",

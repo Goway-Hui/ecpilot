@@ -78,14 +78,14 @@ impl AppState {
                                 self.t("切换到独显直连", "Switch to Discrete"),
                                 false,
                                 cx,
-                                |this, cx| this.action(ec::set_mux(true), cx),
+                                |this, cx| this.run_action(cx, || ec::set_mux(true)),
                             ))
                             .child(self.action_button(
                                 "mux-igpu",
                                 self.t("切换到混合模式", "Switch to Hybrid"),
                                 false,
                                 cx,
-                                |this, cx| this.action(ec::set_mux(false), cx),
+                                |this, cx| this.run_action(cx, || ec::set_mux(false)),
                             )),
                     )
                     .child(
